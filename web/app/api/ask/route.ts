@@ -6,7 +6,6 @@
 // (~1.25× write premium), every subsequent request reads it at ~0.1×.
 //
 // Body: { question: string, history?: {role: "user"|"assistant", content: string}[] }
-// Query: ?smart=1 → Opus 4.7 instead of Sonnet 4.6.
 //
 // SSE event types:
 //   event: text   data: {"delta": "..."}            — token chunk
@@ -53,9 +52,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "question_too_long" }, { status: 413 });
   }
 
-  const url = new URL(req.url);
-  const smart = url.searchParams.get("smart") === "1";
-  const model = smart ? MODELS.smart : MODELS.default;
+  const model = MODELS.default;
 
   // Clip + sanitise conversation history. Roles must alternate and start with "user".
   const history = (body.history ?? [])
