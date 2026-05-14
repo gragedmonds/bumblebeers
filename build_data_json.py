@@ -191,6 +191,25 @@ def _compute_runners_before(raw, player_id_map):
             # the resulting id to decide when to clear runners between innings.
             half_inning_seq = 0
 
+            def dedup_bases(b: dict[int, str | None]) -> dict[int, str | None]:
+                """A runner can never legitimately appear on two bases at once.
+                If a duplicate exists, keep the runner on the higher base — they
+                advance forward, never backwards. This guards against scorer
+                undo/override/redundant-event corruption upstream."""
+                seen: dict[str, int] = {}
+                for base in (1, 2, 3):
+                    rid = b.get(base)
+                    if rid is None:
+                        continue
+                    prev = seen.get(rid)
+                    if prev is None or base > prev:
+                        if prev is not None:
+                            b[prev] = None
+                        seen[rid] = base
+                    else:
+                        b[base] = None
+                return b
+
             def flush_pending():
                 """Apply pending base_running events + play-result heuristic to bases.
                 Also computes the `moves` and `after` snapshot for the most-recent
@@ -262,6 +281,9 @@ def _compute_runners_before(raw, player_id_map):
                         "to": dest,
                     })
 
+                # Dedup BEFORE snapshotting `after` so the saved state can't
+                # show the same runner on two bases.
+                next_bases = dedup_bases(next_bases)
                 # Stitch moves + after-snapshot back into the result for
                 # the transaction we just finished resolving.
                 prior = out.get((eid, last_tx_seq))
@@ -371,8 +393,8 @@ def _compute_runners_before(raw, player_id_map):
                 if batter_id:
                     next_bases[1] = batter_id
                     moves.append({"name": player_id_map.get(batter_id, "Unknown"), "from": 0, "to": 1})
-                bases = next_bases
-                after = dict(next_bases)
+                bases = dedup_bases(next_bases)
+                after = dict(bases)
                 if bmbl_offense:
                     motion_entry = {
                         "before": {str(b): player_id_map.get(before[b]) if before[b] else None for b in (1, 2, 3)},
