@@ -513,37 +513,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-_cells[0].column_letter
-            for c in col_cells[:200]:
-                v = c.value
-                if v is None:
-                    continue
-                ln = len(str(v))
-                if ln > max_len:
-                    max_len = ln
-            ws.column_dimensions[col_letter].width = min(max(10, max_len + 2), 40)
-    wb.save(OUT_XLSX)
-
-    print(f"wrote {OUT_XLSX}")
-
-
-if __name__ == "__main__":
-    main()
-s in ws.columns:
-            max_len = 0
-            col_letter = col_cells[0].column_letter
-            for c in col_cells[:200]:
-                v = c.value
-                if v is None:
-                    continue
-                ln = len(str(v))
-                if ln > max_len:
-                    max_len = ln
-            ws.column_dimensions[col_letter].width = min(max(10, max_len + 2), 40)
-    wb.save(OUT_XLSX)
-
-    print(f"wrote {OUT_XLSX}")
-
-
-if __name__ == "__main__":
-    main()

@@ -112,7 +112,7 @@ def _walk_lineup_subs(event_data: dict):
 
 
 def _compute_runners_before(raw, player_id_map):
-    """Walk the play stream and, for each transaction, return:
+    """Walk the play stream and, for each at-bat (real or synthetic), return:
 
         {
           "before": {"1": name|None, "2": ..., "3": ...},
@@ -126,16 +126,38 @@ def _compute_runners_before(raw, player_id_map):
     (from = 0 = batter's box). `half_inning_id` increments on every
     `end_half` so the viewer can detect inning changes and clear the bases.
 
+    Also detects walks (4 balls) + strikeouts (3 strikes) from pitch
+    sequences, since GameChanger never emits a transaction for either.
+    Returned as (motion_by_seq, synthetic_abs) where synthetic_abs are
+    AB rows ready to extend the main at_bats list. Walks update base
+    state, so transactions FOLLOWING a walk get the correct
+    runners_before.
+
     Result keyed by (event_id, transaction_sequence_number). Known to be
     imperfect for older seasons where scorers were terse (CLAUDE.md
     "play-by-play is incomplete for historical seasons"). We never invent
     runners — only place ones the play stream already named.
     """
     out: dict[tuple[str, int], dict] = {}
+    synthetic_abs: list[dict] = []
 
     for t in raw.get("teams", []):
+        tm = t.get("team_meta") or {}
+        owning_team_id = tm.get("id")
+        season_year_for_team = tm.get("season_year")
         for g in t.get("games") or []:
-            eid = ((g.get("schedule_entry") or {}).get("event") or {}).get("id")
+            entry = g.get("schedule_entry") or {}
+            event_obj = entry.get("event") or {}
+            eid = event_obj.get("id")
+            pre = entry.get("pregame_data") or {}
+            home_away = pre.get("home_away")
+            opponent_name = pre.get("opponent_name")
+            date_local = _local_date_from_event_start(event_obj.get("start"))
+            # Bumblebees bat top of 1st when away, bottom of 1st when home.
+            bmbl_offense = (home_away != "home")
+            outs = 0
+            balls = 0
+            strikes = 0
             plays = sorted(g.get("plays") or [], key=lambda p: p.get("sequence_number", 0))
 
             # Pre-decode every play once; group base_running events by the most
@@ -271,8 +293,163 @@ def _compute_runners_before(raw, player_id_map):
                     lineup_idx[tid] = idx
                 return tid
 
+            def batting_tid() -> str | None:
+                """Team currently batting: BMBL when bmbl_offense, else the
+                other team_id seen in lineup_slot. The `current_offense_team`
+                variable can be stale (it just reflects the last lineup
+                operation seen, including pre-game opponent setup)."""
+                if bmbl_offense:
+                    return owning_team_id
+                for tid in lineup_slot:
+                    if tid != owning_team_id:
+                        return tid
+                return None
+
+            def fire_walk(pitch_seq: int) -> None:
+                """A 4th ball just landed. Place batter on 1B, advance forced
+                runners. Emit a synthetic AB if BMBL is on offense, plus a
+                motion entry so subsequent transactions see correct bases.
+                """
+                nonlocal bases
+                bat_tid = batting_tid()
+                batter_id: str | None = None
+                if bat_tid and bat_tid in lineup_slot:
+                    slots = lineup_slot[bat_tid]
+                    ix = lineup_idx.get(bat_tid, 0)
+                    if slots:
+                        batter_id = slots.get(ix) or slots.get(ix % max(len(slots), 1))
+                # Force-advance: walk fills bases in order. 1B fills with
+                # batter; runner on 1B forced to 2B if 1B was occupied; ditto
+                # 2B→3B, 3B→home.
+                flush_pending()  # close any prior transaction's motion
+                before = dict(bases)
+                next_bases: dict[int, str | None] = {1: None, 2: None, 3: None}
+                moves: list[dict] = []
+                runner_at_3 = bases.get(3)
+                runner_at_2 = bases.get(2)
+                runner_at_1 = bases.get(1)
+                forced_3 = runner_at_3 is not None and runner_at_2 is not None and runner_at_1 is not None
+                forced_2 = runner_at_2 is not None and runner_at_1 is not None
+                forced_1 = runner_at_1 is not None
+                # 3B: scores if forced; else stays on 3B
+                if runner_at_3:
+                    if forced_3:
+                        moves.append({"name": player_id_map.get(runner_at_3, "Unknown"), "from": 3, "to": 4})
+                    else:
+                        next_bases[3] = runner_at_3
+                # 2B: → 3B if forced; else stays
+                if runner_at_2:
+                    if forced_2:
+                        next_bases[3] = runner_at_2
+                        moves.append({"name": player_id_map.get(runner_at_2, "Unknown"), "from": 2, "to": 3})
+                    else:
+                        next_bases[2] = runner_at_2
+                # 1B: → 2B if forced; else stays
+                if runner_at_1:
+                    if forced_1:
+                        next_bases[2] = runner_at_1
+                        moves.append({"name": player_id_map.get(runner_at_1, "Unknown"), "from": 1, "to": 2})
+                    else:
+                        next_bases[1] = runner_at_1
+                # Batter to 1B
+                if batter_id:
+                    next_bases[1] = batter_id
+                    moves.append({"name": player_id_map.get(batter_id, "Unknown"), "from": 0, "to": 1})
+                bases = next_bases
+                after = dict(next_bases)
+                if bmbl_offense:
+                    motion_entry = {
+                        "before": {str(b): player_id_map.get(before[b]) if before[b] else None for b in (1, 2, 3)},
+                        "after": {str(b): player_id_map.get(after[b]) if after[b] else None for b in (1, 2, 3)},
+                        "moves": moves,
+                        "half_inning_id": f"{eid}:{half_inning_seq}",
+                    }
+                    out[(eid, pitch_seq)] = motion_entry
+                    runs_on_walk = sum(1 for m in moves if m["to"] == 4)
+                    synthetic_abs.append({
+                        "person_key": pk(player_id_map.get(batter_id)) if batter_id else "",
+                        "batter": player_id_map.get(batter_id) if batter_id else None,
+                        "season_year": season_year_for_team,
+                        "date": date_local,
+                        "opponent": opponent_name,
+                        "result": "walk",
+                        "play_type": None,
+                        "defender_position": None,
+                        "field_zone": "other",
+                        "field_side": "other",
+                        "runs_scored": runs_on_walk,
+                        "run_scoring": runs_on_walk > 0,
+                        "x": None,
+                        "y": None,
+                        "transaction_seq": int(pitch_seq),
+                        "event_id": eid,
+                    })
+                if bat_tid:
+                    lineup_idx[bat_tid] = lineup_idx.get(bat_tid, 0) + 1
+
+            def fire_strikeout(pitch_seq: int) -> None:
+                """3 strikes. No base change. Emit synthetic K AB if BMBL offense."""
+                nonlocal outs
+                flush_pending()
+                bat_tid = batting_tid()
+                batter_id: str | None = None
+                if bat_tid and bat_tid in lineup_slot:
+                    slots = lineup_slot[bat_tid]
+                    ix = lineup_idx.get(bat_tid, 0)
+                    if slots:
+                        batter_id = slots.get(ix) or slots.get(ix % max(len(slots), 1))
+                if bmbl_offense:
+                    out[(eid, pitch_seq)] = {
+                        "before": {str(b): player_id_map.get(bases[b]) if bases[b] else None for b in (1, 2, 3)},
+                        "after": {str(b): player_id_map.get(bases[b]) if bases[b] else None for b in (1, 2, 3)},
+                        "moves": [],
+                        "half_inning_id": f"{eid}:{half_inning_seq}",
+                    }
+                    synthetic_abs.append({
+                        "person_key": pk(player_id_map.get(batter_id)) if batter_id else "",
+                        "batter": player_id_map.get(batter_id) if batter_id else None,
+                        "season_year": season_year_for_team,
+                        "date": date_local,
+                        "opponent": opponent_name,
+                        "result": "strike_out",
+                        "play_type": None,
+                        "defender_position": None,
+                        "field_zone": "other",
+                        "field_side": "other",
+                        "runs_scored": 0,
+                        "run_scoring": False,
+                        "x": None,
+                        "y": None,
+                        "transaction_seq": int(pitch_seq),
+                        "event_id": eid,
+                    })
+                if bat_tid:
+                    lineup_idx[bat_tid] = lineup_idx.get(bat_tid, 0) + 1
+                outs += 1
+
+            def flip_half():
+                """End of half-inning: flip offense, reset outs + count, clear bases."""
+                nonlocal bmbl_offense, outs, balls, strikes, bases, half_inning_seq
+                nonlocal last_tx_seq, last_tx_result, last_tx_batter
+                # Close any trailing motion for the prior transaction.
+                flush_pending()
+                bmbl_offense = not bmbl_offense
+                outs = 0
+                balls = 0
+                strikes = 0
+                bases = {1: None, 2: None, 3: None}
+                last_tx_seq = None
+                last_tx_result = None
+                last_tx_batter = None
+                half_inning_seq += 1
+
             for seq, code, ed in decoded:
                 attrs = ed.get("attributes") or {}
+                # 3-out fallback (mirror build_excel.GameState): if we've
+                # accumulated 3 outs and the next event isn't an end_half,
+                # flip the half-inning ourselves.
+                if outs >= 3 and code != "end_half":
+                    flip_half()
                 if code == "fill_lineup_index":
                     tid = apply_fill(attrs)
                     if tid:
@@ -281,6 +458,23 @@ def _compute_runners_before(raw, player_id_map):
                     tid = apply_goto(attrs)
                     if tid:
                         current_offense_team = tid
+                elif code == "pitch":
+                    r = attrs.get("result") or ""
+                    if r in _PITCH_BALL:
+                        balls += 1
+                        if balls >= 4:
+                            fire_walk(seq)
+                            balls = 0
+                            strikes = 0
+                    elif r in _PITCH_STRIKE:
+                        strikes += 1
+                        if strikes >= 3:
+                            fire_strikeout(seq)
+                            balls = 0
+                            strikes = 0
+                    elif r in _PITCH_FOUL:
+                        if strikes < 2:
+                            strikes += 1
                 elif code == "transaction":
                     play_result = _extract_play_result(ed)
                     if play_result:
@@ -300,15 +494,34 @@ def _compute_runners_before(raw, player_id_map):
                             "after": {"1": None, "2": None, "3": None},
                             "half_inning_id": f"{eid}:{half_inning_seq}",
                         }
-                        # Identify the batter via the offense team's lineup pointer.
+                        # Identify the batter via the offense team's lineup
+                        # pointer. The pointer is advanced explicitly per AB
+                        # below (mirroring build_excel.GameState.register_at_bat)
+                        # because GameChanger's `goto_lineup_index` events fire
+                        # only sporadically (~5% of ABs).
+                        bat_tid = batting_tid()
                         batter_id = None
-                        if current_offense_team and current_offense_team in lineup_slot:
-                            slots = lineup_slot[current_offense_team]
-                            ix = lineup_idx.get(current_offense_team, 0)
-                            batter_id = slots.get(ix) or slots.get(ix % max(len(slots), 1))
+                        if bat_tid and bat_tid in lineup_slot:
+                            slots = lineup_slot[bat_tid]
+                            ix = lineup_idx.get(bat_tid, 0)
+                            size = max(len(slots), 1)
+                            batter_id = slots.get(ix) or slots.get(ix % size)
                         last_tx_seq = seq
                         last_tx_result = play_result
                         last_tx_batter = batter_id
+                        if bat_tid:
+                            lineup_idx[bat_tid] = (
+                                lineup_idx.get(bat_tid, 0) + 1
+                            )
+                        # Real AB resets the count
+                        balls = 0
+                        strikes = 0
+                        # Outs tally for 3-out fallback
+                        if play_result in {"batter_out", "batter_out_advance_runners",
+                                           "sacrifice_fly", "infield_fly", "strike_out",
+                                           "dropped_third_strike_batter_out", "other_out",
+                                           "fielders_choice"}:
+                            outs += 1
                     else:
                         # LINEUP-UPDATE transaction: walk its nested events and
                         # update lineup state, but DO NOT snapshot or flush.
@@ -324,18 +537,17 @@ def _compute_runners_before(raw, player_id_map):
                 elif code == "base_running":
                     if last_tx_seq is not None:
                         pending_brs.append(attrs)
+                    # Top-level scoring base_running can also bump outs
+                    if (attrs.get("playType") or "").lower() in {"out_on_last_play",
+                                                                  "caught_stealing",
+                                                                  "picked_off",
+                                                                  "out_at_base", "out"}:
+                        outs += 1
                 elif code == "end_half":
-                    # Apply pending events for the inning's final at-bat, then
-                    # wipe bases. New half, fresh paths.
-                    flush_pending()
-                    bases = {1: None, 2: None, 3: None}
-                    last_tx_seq = None
-                    last_tx_result = None
-                    last_tx_batter = None
-                    half_inning_seq += 1
+                    flip_half()
             # End of game: flush any trailing pending events (defensive).
             flush_pending()
-    return out
+    return out, synthetic_abs
 
 
 # Pitch results that count as balls / strikes / fouls for AB-outcome detection.
@@ -364,202 +576,6 @@ def _local_date_from_event_start(start) -> str:
         return dt.astimezone(ZoneInfo("America/Toronto")).strftime("%Y-%m-%d")
     except Exception:
         return s[:10]
-
-
-def _detect_walks_and_strikeouts(raw, player_id_map):
-    """Walk the play stream and synthesize at-bat rows for every Bumblebees
-    plate appearance that ended in a walk or strikeout. These outcomes are
-    NOT logged as `transaction` events in the raw stream — they only exist
-    as sequences of standalone `pitch` events (4 balls → walk, 3 strikes →
-    strikeout). build_excel.py only emits an AtBats row when a `ball_in_play`
-    fires inside a transaction, so walks/Ks are systematically missing from
-    the xlsx. This function recovers them.
-
-    Tracks lineup state minimally so each synthetic AB carries the correct
-    batter. Only Bumblebees ABs are emitted (matches the rest of the
-    pipeline's "Bumblebees offense only" stance).
-    """
-    out: list[dict] = []
-    if not raw:
-        return out
-
-    for t in raw.get("teams", []) or []:
-        tm = t.get("team_meta") or {}
-        owning_team_id = tm.get("id")
-        season_year = tm.get("season_year")
-        if not owning_team_id:
-            continue
-
-        for g in t.get("games", []) or []:
-            entry = g.get("schedule_entry") or {}
-            ev = entry.get("event") or {}
-            eid = ev.get("id")
-            pre = entry.get("pregame_data") or {}
-            home_away = pre.get("home_away")
-            opponent = pre.get("opponent_name")
-            date_str = _local_date_from_event_start(ev.get("start"))
-
-            # Bumblebees bat top of inning if AWAY, bottom if HOME.
-            bmbl_offense = (home_away != "home")
-            outs = 0
-            balls = 0
-            strikes = 0
-            half_inning_idx = -1  # increments on each end_half
-
-            lineup_slot: dict[str, dict[int, str]] = defaultdict(dict)
-            lineup_idx: dict[str, int] = defaultdict(int)
-
-            def emit(result: str, last_seq: int) -> None:
-                nonlocal outs
-                if not bmbl_offense:
-                    return
-                slots = lineup_slot.get(owning_team_id) or {}
-                pid = None
-                if slots:
-                    size = max(slots.keys()) + 1
-                    ix = lineup_idx.get(owning_team_id, 0) % size
-                    pid = slots.get(ix)
-                name = player_id_map.get(pid) if pid else None
-                out.append({
-                    "person_key": pk(name) if name else "",
-                    "batter": name,
-                    "season_year": season_year,
-                    "date": date_str,
-                    "opponent": opponent,
-                    "result": result,
-                    "play_type": None,
-                    "defender_position": None,
-                    "field_zone": "other",
-                    "field_side": "other",
-                    "runs_scored": 0,
-                    "run_scoring": False,
-                    "x": None,
-                    "y": None,
-                    "transaction_seq": int(last_seq) if last_seq is not None else 0,
-                    "event_id": eid,
-                    # runners_before/after/moves/half_inning_id get backfilled
-                    # by _compute_runners_before's lookup keyed on
-                    # (event_id, transaction_seq) — and if there's no match,
-                    # the main() fallback fills with empties.
-                    "half_inning_id": f"{eid}:{half_inning_idx}",
-                })
-                lineup_idx[owning_team_id] = lineup_idx.get(owning_team_id, 0) + 1
-                if result == "strike_out":
-                    outs += 1
-
-            plays = sorted(
-                g.get("plays") or [], key=lambda p: p.get("sequence_number", 0)
-            )
-            for p in plays:
-                seq = p.get("sequence_number")
-                try:
-                    ed = json.loads(p["event_data"])
-                except Exception:
-                    continue
-                code = ed.get("code")
-                attrs = ed.get("attributes") or {}
-
-                if code == "end_half":
-                    half_inning_idx += 1
-                    bmbl_offense = not bmbl_offense
-                    outs = 0
-                    balls = 0
-                    strikes = 0
-                    continue
-
-                if code == "fill_lineup_index":
-                    tid = attrs.get("teamId")
-                    i = attrs.get("index")
-                    pid = attrs.get("playerId")
-                    if tid and pid and isinstance(i, int):
-                        lineup_slot[tid][i] = pid
-                    continue
-
-                if code == "fill_lineup":
-                    tid = attrs.get("teamId")
-                    pid = attrs.get("playerId")
-                    if tid and pid:
-                        used = set(lineup_slot[tid].keys())
-                        next_i = 0
-                        while next_i in used:
-                            next_i += 1
-                        lineup_slot[tid][next_i] = pid
-                    continue
-
-                if code == "goto_lineup_index":
-                    tid = attrs.get("teamId")
-                    i = attrs.get("index")
-                    if tid and isinstance(i, int):
-                        lineup_idx[tid] = i
-                    continue
-
-                if code == "sub_players":
-                    tid = attrs.get("teamId")
-                    out_pid = attrs.get("outgoingPlayerId")
-                    in_pid = attrs.get("incomingPlayerId")
-                    if tid and out_pid and in_pid:
-                        for ix, opid in list(lineup_slot[tid].items()):
-                            if opid == out_pid:
-                                lineup_slot[tid][ix] = in_pid
-                    continue
-
-                if code == "pitch":
-                    r = attrs.get("result") or ""
-                    if r in _PITCH_BALL:
-                        balls += 1
-                        if balls >= 4:
-                            emit("walk", seq)
-                            balls = 0
-                            strikes = 0
-                    elif r in _PITCH_STRIKE:
-                        strikes += 1
-                        if strikes >= 3:
-                            emit("strike_out", seq)
-                            balls = 0
-                            strikes = 0
-                    elif r in _PITCH_FOUL:
-                        if strikes < 2:
-                            strikes += 1
-                    continue
-
-                if code == "transaction":
-                    subs = ed.get("events") or []
-                    has_bip = any(s.get("code") == "ball_in_play" for s in subs)
-                    if has_bip:
-                        # AB ended on contact — advance lineup + reset counters.
-                        if bmbl_offense:
-                            lineup_idx[owning_team_id] = (
-                                lineup_idx.get(owning_team_id, 0) + 1
-                            )
-                            for s in subs:
-                                if s.get("code") == "ball_in_play":
-                                    pr = (s.get("attributes") or {}).get("playResult", "")
-                                    if "out" in pr or pr in (
-                                        "fielders_choice",
-                                        "sacrifice_fly",
-                                        "infield_fly",
-                                    ):
-                                        outs += 1
-                        balls = 0
-                        strikes = 0
-                    else:
-                        # Lineup-update transaction — walk nested events.
-                        for s in subs:
-                            sc = s.get("code")
-                            sa = s.get("attributes") or {}
-                            if sc == "fill_lineup_index":
-                                tid = sa.get("teamId")
-                                i = sa.get("index")
-                                pid = sa.get("playerId")
-                                if tid and pid and isinstance(i, int):
-                                    lineup_slot[tid][i] = pid
-                            elif sc == "goto_lineup_index":
-                                tid = sa.get("teamId")
-                                i = sa.get("index")
-                                if tid and isinstance(i, int):
-                                    lineup_idx[tid] = i
-                    continue
-    return out
 
 
 def _season_year_from_meta(meta: dict) -> int | None:
@@ -672,12 +688,12 @@ def main():
             raw = json.load(f)
         player_id_map = _build_player_id_map(raw)
 
-        # Recover walks + strikeouts from pitch sequences. GameChanger does
-        # NOT emit a transaction for these outcomes — they exist only as
-        # standalone `pitch` events (4 balls → walk, 3 strikes → K). This
-        # builder synthesizes one AB row per detected walk/K with the right
-        # batter (via lineup tracking), date, and opponent.
-        synthetic = _detect_walks_and_strikeouts(raw, player_id_map)
+        # Single pass over the raw stream produces BOTH the per-transaction
+        # motion dict (runners_before/after + moves) AND synthetic AB rows
+        # for walks (4 balls) + strikeouts (3 strikes) — GameChanger never
+        # emits a transaction for those outcomes. Walks update base state so
+        # subsequent transactions see the correct runners_before.
+        motion, synthetic = _compute_runners_before(raw, player_id_map)
         walk_n = sum(1 for s in synthetic if s["result"] == "walk")
         k_n = sum(1 for s in synthetic if s["result"] == "strike_out")
         print(
@@ -685,8 +701,6 @@ def main():
             f"({len(synthetic)} synthetic at-bats appended)"
         )
         at_bats.extend(synthetic)
-
-        motion = _compute_runners_before(raw, player_id_map)
         with_runners = 0
         with_moves = 0
         for ab in at_bats:

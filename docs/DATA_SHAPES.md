@@ -23,10 +23,50 @@ Static — committed to git, regenerated on each re-scrape.
   players: Record<person_key, Player>;           // 32 entries today (all-time)
   career_weighted: Record<person_key, CareerWeighted>;
   weights: Record<string, number>;               // BMBL+ component weights (e.g. {"wOBA": 0.4, "ISO": 0.10, ...})
-  at_bats: AtBat[];                              // ~5,240 entries; the spray-chart payload
+  at_bats: AtBat[];                              // ~5,788 entries; the spray-chart payload
   mvp_nights: MvpNight[];                        // 114 entries today
 }
 ```
+
+### Coverage of the `at_bats` log vs season-stats truth
+
+`at_bats` is built from GameChanger's play-by-play stream. Walks (`result:
+"walk"`) and strikeouts (`result: "strike_out"`) are not emitted as
+transactions in the raw stream — they're synthesised from pitch sequences
+(4 balls → walk, 3 strikes → K). Walks correctly advance forced runners
+in `runners_before`/`runners_after`/`runner_moves`.
+
+The play-by-play stream is **incomplete** for many historical games — only
+about half of all plate appearances were scored at the play level (the
+rest were entered as season-stats totals only). The audit scripts
+(`audit_precise.py`, `audit_per_game.py`) confirm we capture 100% of what
+exists in the raw, but per-season totals trail the authoritative
+`season-stats` endpoint by ~30–50%:
+
+```
+YEAR    PA_PBP   PA_T   AB_PBP   AB_T   H_PBP   H_T   HR_PBP   HR_T   BB_PBP   BB_T   SO_PBP   SO_T
+2018       831   1493     761   1349     407   740      29    45      55    108       6     19
+2019      1022   1584     922   1425     513   770      30    47      75    123      26     33
+2021       611    916     562    844     302   438      11    21      36     52      11     14
+2022       847   1442     777   1332     396   696      20    35      52     81      11     21
+2023       860   1497     793   1382     437   770      19    29      42     77      10     16
+2024       728   1355     666   1245     344   668      11    20      44     73       6      8
+2025       889   1566     834   1470     432   752       8    22      37     56       6     11
+```
+
+Implications:
+
+- For **per-at-bat** questions (RISP, opponent splits, spray, day-of-week)
+  use the `at_bats` log directly. Numbers are correct for the games that
+  were scored at play level.
+- For **season HR / RBI / BB / SO / HBP totals** always use
+  `players[key].seasons[i].stats` (the authoritative endpoint). The
+  play-by-play undercounts.
+- HR leaderboards: query `stats.HR` per season, not the count of
+  `result == "home_run"` in `at_bats`.
+- "Why don't the totals match?" — they're not supposed to. The
+  `stats` block is the source of truth; the `at_bats` log is a per-AB
+  trace of the games that got scored thoroughly enough to log every play.
 
 ### `Player`
 
