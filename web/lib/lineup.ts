@@ -24,6 +24,15 @@ export interface Lineup {
   matrix: Record<string, Partial<Record<Pos, Mark>>>;
   // Optional per-player free-text notes.
   notes: Record<string, string>;
+  // Manual roster overrides:
+  //   archived: person_keys explicitly hidden from the active roster (even if
+  //             the auto-rule would include them — e.g. regular taking the
+  //             year off).
+  //   added:    person_keys explicitly added to the active roster — either an
+  //             existing player the auto-rule would drop, or a brand-new
+  //             player who isn't in the snapshot yet.
+  archived: string[];
+  added: { key: string; display_name: string }[];
   // ISO-8601 timestamp of the most recent successful PUT.
   updated_at: string;
 }
@@ -31,6 +40,8 @@ export interface Lineup {
 export const EMPTY_LINEUP: Lineup = {
   matrix: {},
   notes: {},
+  archived: [],
+  added: [],
   updated_at: "",
 };
 
@@ -67,6 +78,8 @@ export function sanitizeLineup(input: unknown): Lineup {
   const out: Lineup = {
     matrix: {},
     notes: {},
+    archived: [],
+    added: [],
     updated_at: new Date().toISOString(),
   };
   if (!input || typeof input !== "object") return out;
@@ -90,6 +103,32 @@ export function sanitizeLineup(input: unknown): Lineup {
       if (!pk) continue;
       const s = String(val ?? "").trim();
       if (s) out.notes[pk] = s;
+    }
+  }
+  // archived: dedupe, drop empty strings, cap to 100 entries.
+  if (Array.isArray(obj.archived)) {
+    const seen = new Set<string>();
+    for (const v of obj.archived as unknown[]) {
+      const s = typeof v === "string" ? v.trim() : "";
+      if (s && !seen.has(s)) {
+        seen.add(s);
+        out.archived.push(s);
+        if (out.archived.length >= 100) break;
+      }
+    }
+  }
+  // added: dedupe by key, drop empties, cap to 100 entries.
+  if (Array.isArray(obj.added)) {
+    const seen = new Set<string>();
+    for (const v of obj.added as unknown[]) {
+      if (!v || typeof v !== "object") continue;
+      const rec = v as Record<string, unknown>;
+      const key = typeof rec.key === "string" ? rec.key.trim() : "";
+      const name = typeof rec.display_name === "string" ? rec.display_name.trim() : "";
+      if (!key || !name || seen.has(key)) continue;
+      seen.add(key);
+      out.added.push({ key, display_name: name });
+      if (out.added.length >= 100) break;
     }
   }
   return out;

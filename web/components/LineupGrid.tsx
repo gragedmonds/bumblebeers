@@ -9,7 +9,7 @@ import {
   type Pos,
   POSITIONS,
 } from "@/lib/lineup";
-import { getActiveRoster, getFullRoster } from "@/lib/data";
+import { applyRosterOverrides, getActiveRoster, slugifyKey } from "@/lib/data";
 
 const MARK_CYCLE: Record<Mark, Mark> = {
   none: "can",
@@ -64,15 +64,18 @@ export default function LineupGrid() {
   const [saveMsg, setSaveMsg] = useState<string | null>(null);
   const [serverError, setServerError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
-  const [showAll, setShowAll] = useState(false);
+  const [showArchived, setShowArchived] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [addError, setAddError] = useState<string | null>(null);
 
-  // Default: players who appeared in the latest season with ≥25 career PA
-  // (the regulars). Toggle "Show all" to include retirees + casual subs so
-  // their historical can/should marks remain editable.
-  const players = useMemo(() => {
+  // Final active set: (auto-active ∪ lineup.added) − lineup.archived. Sorted
+  // by career BMBL+ desc so the top regulars come first.
+  const activePlayers = useMemo(() => {
     if (!snapshot) return [] as { key: string; name: string }[];
-    const roster = showAll ? getFullRoster(snapshot) : getActiveRoster(snapshot);
-    // Sort by career BMBL+ desc so the top regulars come first.
+    const roster = applyRosterOverrides(snapshot, {
+      archived: lineup.archived,
+      added: lineup.added,
+    });
     return roster
       .slice()
       .sort((a, b) => {
@@ -81,18 +84,33 @@ export default function LineupGrid() {
         return cb - ca;
       })
       .map((p) => ({ key: p.key, name: p.display_name }));
-  }, [snapshot, showAll]);
+  }, [snapshot, lineup.added, lineup.archived]);
 
-  const archivedCount = useMemo(() => {
-    if (!snapshot) return 0;
-    return getFullRoster(snapshot).length - getActiveRoster(snapshot).length;
-  }, [snapshot]);
+  // Anyone who's been manually archived OR auto-dropped (not active, not
+  // currently shown). Listed in alpha order in the archived panel.
+  const archivedPlayers = useMemo(() => {
+    if (!snapshot) return [] as { key: string; name: string }[];
+    const activeKeys = new Set(activePlayers.map((p) => p.key));
+    const all = new Map<string, string>();
+    for (const [k, p] of Object.entries(snapshot.players)) {
+      all.set(k, p.display_name || k);
+    }
+    for (const a of lineup.added) {
+      if (!all.has(a.key)) all.set(a.key, a.display_name);
+    }
+    const out: { key: string; name: string }[] = [];
+    for (const [key, name] of all) {
+      if (!activeKeys.has(key)) out.push({ key, name });
+    }
+    out.sort((a, b) => a.name.localeCompare(b.name));
+    return out;
+  }, [snapshot, activePlayers, lineup.added]);
 
   const filtered = useMemo(() => {
-    if (!search.trim()) return players;
+    if (!search.trim()) return activePlayers;
     const q = search.toLowerCase();
-    return players.filter((p) => p.name.toLowerCase().includes(q));
-  }, [players, search]);
+    return activePlayers.filter((p) => p.name.toLowerCase().includes(q));
+  }, [activePlayers, search]);
 
   // Initial fetch
   useEffect(() => {
@@ -104,6 +122,8 @@ export default function LineupGrid() {
         setLineup({
           matrix: body.matrix ?? {},
           notes: body.notes ?? {},
+          archived: Array.isArray(body.archived) ? body.archived : [],
+          added: Array.isArray(body.added) ? body.added : [],
           updated_at: body.updated_at ?? "",
         });
         setLoaded(true);
@@ -123,6 +143,68 @@ export default function LineupGrid() {
       cancelled = true;
     };
   }, []);
+
+  function markDirty() {
+    setDirty(true);
+    setSaveMsg(null);
+  }
+
+  function archivePlayer(key: string) {
+    markDirty();
+    setLineup((prev) => {
+      const archived = prev.archived.includes(key)
+        ? prev.archived
+        : [...prev.archived, key];
+      // If they were in `added`, dropping them from there too keeps state clean.
+      const added = prev.added.filter((a) => a.key !== key);
+      return { ...prev, archived, added };
+    });
+  }
+
+  function unarchivePlayer(key: string, displayName: string) {
+    markDirty();
+    setLineup((prev) => {
+      const archived = prev.archived.filter((k) => k !== key);
+      // If the auto-rule won't pick them up, also pin them via `added` so they
+      // actually show. (Safe to over-add — applyRosterOverrides dedupes.)
+      const inAuto = snapshot
+        ? getActiveRoster(snapshot).some((p) => p.key === key)
+        : false;
+      let added = prev.added;
+      if (!inAuto && !prev.added.some((a) => a.key === key)) {
+        added = [...prev.added, { key, display_name: displayName }];
+      }
+      return { ...prev, archived, added };
+    });
+  }
+
+  function addNewPlayer(name: string) {
+    const trimmed = name.trim();
+    if (!trimmed) {
+      setAddError("Enter a name first.");
+      return;
+    }
+    const key = slugifyKey(trimmed);
+    if (!key) {
+      setAddError("Couldn't make a key from that name.");
+      return;
+    }
+    if (activePlayers.some((p) => p.key === key)) {
+      setAddError(`${trimmed} is already in the active list.`);
+      return;
+    }
+    setAddError(null);
+    markDirty();
+    setLineup((prev) => {
+      const archived = prev.archived.filter((k) => k !== key);
+      let added = prev.added;
+      if (!added.some((a) => a.key === key)) {
+        added = [...added, { key, display_name: trimmed }];
+      }
+      return { ...prev, archived, added };
+    });
+    setNewName("");
+  }
 
   function getMark(key: string, pos: Pos): Mark {
     return lineup.matrix[key]?.[pos] ?? "none";
@@ -172,6 +254,8 @@ export default function LineupGrid() {
       setLineup({
         matrix: saved.matrix ?? {},
         notes: saved.notes ?? {},
+        archived: Array.isArray(saved.archived) ? saved.archived : [],
+        added: Array.isArray(saved.added) ? saved.added : [],
         updated_at: saved.updated_at ?? "",
       });
       setDirty(false);
@@ -204,10 +288,10 @@ export default function LineupGrid() {
         <label className="inline-flex items-center gap-2 text-sm text-stone-700">
           <input
             type="checkbox"
-            checked={showAll}
-            onChange={(e) => setShowAll(e.target.checked)}
+            checked={showArchived}
+            onChange={(e) => setShowArchived(e.target.checked)}
           />
-          Show archived ({archivedCount})
+          Show archived ({archivedPlayers.length})
         </label>
         <Legend />
         <span className="text-xs text-stone-500">
@@ -267,8 +351,16 @@ export default function LineupGrid() {
               value={lineup.notes[p.key] ?? ""}
               onChange={(e) => setNote(p.key, e.target.value)}
               placeholder="notes…"
-              className="ml-auto min-h-9 w-full min-w-[8rem] flex-1 rounded-md border border-stone-200 bg-white px-2 py-1 text-sm focus:border-amber-500 focus:outline-none sm:w-auto sm:max-w-[18rem]"
+              className="min-h-9 w-full min-w-[8rem] flex-1 rounded-md border border-stone-200 bg-white px-2 py-1 text-sm focus:border-amber-500 focus:outline-none sm:w-auto sm:max-w-[18rem]"
             />
+            <button
+              type="button"
+              onClick={() => archivePlayer(p.key)}
+              title={`Archive ${p.name}`}
+              className="min-h-9 rounded-md border border-stone-300 bg-white px-2 py-1 text-xs text-stone-600 hover:border-amber-400 hover:bg-amber-50 hover:text-amber-800"
+            >
+              Archive
+            </button>
           </li>
         ))}
         {filtered.length === 0 && (
@@ -276,11 +368,69 @@ export default function LineupGrid() {
         )}
       </ul>
 
+      {/* Add-player form */}
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          addNewPlayer(newName);
+        }}
+        className="flex flex-wrap items-center gap-2 rounded-2xl border border-amber-200 bg-white p-3 shadow-sm"
+      >
+        <label className="text-sm font-semibold text-amber-900">Add player</label>
+        <input
+          type="text"
+          value={newName}
+          onChange={(e) => {
+            setNewName(e.target.value);
+            setAddError(null);
+          }}
+          placeholder="First name (e.g. Tony)"
+          className="min-h-9 flex-1 rounded-md border border-stone-300 px-3 py-1.5 text-sm"
+        />
+        <button
+          type="submit"
+          disabled={!newName.trim()}
+          className="min-h-9 rounded-md border border-amber-400 bg-amber-100 px-3 py-1.5 text-sm font-semibold text-amber-900 hover:bg-amber-200 disabled:opacity-50"
+        >
+          + Add
+        </button>
+        {addError && (
+          <span className="text-xs text-red-700">{addError}</span>
+        )}
+      </form>
+
+      {/* Archived panel */}
+      {showArchived && (
+        <div className="rounded-2xl border border-stone-200 bg-stone-50 p-3 shadow-sm">
+          <div className="mb-2 text-sm font-semibold text-stone-700">
+            Archived ({archivedPlayers.length})
+          </div>
+          {archivedPlayers.length === 0 ? (
+            <p className="text-xs text-stone-500 italic">No archived players.</p>
+          ) : (
+            <ul className="flex flex-wrap gap-2">
+              {archivedPlayers.map((p) => (
+                <li key={p.key}>
+                  <button
+                    type="button"
+                    onClick={() => unarchivePlayer(p.key, p.name)}
+                    className="inline-flex items-center gap-1 rounded-full border border-stone-300 bg-white px-3 py-1 text-sm text-stone-700 hover:border-emerald-500 hover:bg-emerald-50 hover:text-emerald-800"
+                  >
+                    <span className="font-medium">{p.name}</span>
+                    <span className="text-xs text-stone-400">↩</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+
       <p className="text-xs text-stone-500">
         Tap a pill to cycle: <span className="font-semibold text-stone-500">grey</span> →{" "}
         <span className="font-semibold text-amber-700">can play</span> →{" "}
         <span className="font-semibold text-emerald-700">should play</span> → grey.
-        {" "}{players.length} players in the roster.
+        {" "}{activePlayers.length} active · {archivedPlayers.length} archived.
       </p>
     </div>
   );

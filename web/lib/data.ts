@@ -202,3 +202,46 @@ export function getFullRoster(snap: Snapshot): RosterPlayer[] {
     .map(([key, p]) => ({ key, display_name: p.display_name || key }))
     .sort((a, b) => a.display_name.localeCompare(b.display_name));
 }
+
+/**
+ * Combine the auto-derived active roster with manual overrides:
+ *   final = (auto-active ∪ added) − archived
+ *
+ * `added` may include brand-new players who aren't in the snapshot at all
+ * (their display_name comes from the override entry itself).
+ */
+export function applyRosterOverrides(
+  snap: Snapshot,
+  overrides: {
+    archived?: string[];
+    added?: { key: string; display_name: string }[];
+  },
+): RosterPlayer[] {
+  const archived = new Set(overrides.archived ?? []);
+  const auto = getActiveRoster(snap);
+  const result = new Map<string, RosterPlayer>();
+  for (const p of auto) {
+    if (!archived.has(p.key)) result.set(p.key, p);
+  }
+  for (const a of overrides.added ?? []) {
+    if (!a.key || archived.has(a.key)) continue;
+    if (result.has(a.key)) continue;
+    // Prefer the snapshot's display name when the key already exists, so
+    // adding by an existing key respects the canonical capitalization.
+    const display = snap.players[a.key]?.display_name || a.display_name || a.key;
+    result.set(a.key, { key: a.key, display_name: display });
+  }
+  return Array.from(result.values()).sort((a, b) =>
+    a.display_name.localeCompare(b.display_name),
+  );
+}
+
+/** Slugify a free-text name into a stable person_key. */
+export function slugifyKey(name: string): string {
+  return name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 32);
+}

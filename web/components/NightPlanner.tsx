@@ -10,7 +10,7 @@ import AttendanceEditor from "./AttendanceEditor";
 import LineupBuilder from "./LineupBuilder";
 import { useSnapshot } from "@/lib/useSnapshot";
 import { EMPTY_LINEUP, type Lineup } from "@/lib/lineup";
-import { getActiveRoster } from "@/lib/data";
+import { applyRosterOverrides } from "@/lib/data";
 import {
   emptyNight,
   type Availability,
@@ -46,13 +46,16 @@ export default function NightPlanner({ date }: { date: string }) {
   const [savedMsg, setSavedMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
-  // Active roster only — retirees + casual subs hidden so we don't show them
-  // in attendance toggles or the lineup-builder pickers. Manage the full
-  // roster (including archived) from /lineup.
+  // Active roster honoring the manual overrides set on /lineup
+  // (archived + added). Retirees and casual subs stay hidden by default;
+  // anything Greg explicitly archived/added flows through here too.
   const roster = useMemo(() => {
     if (!snapshot) return [] as { key: string; display_name: string }[];
-    return getActiveRoster(snapshot);
-  }, [snapshot]);
+    return applyRosterOverrides(snapshot, {
+      archived: prefs.archived ?? [],
+      added: prefs.added ?? [],
+    });
+  }, [snapshot, prefs.archived, prefs.added]);
 
   // Attendees from night status
   const attending = useMemo(
@@ -87,6 +90,8 @@ export default function NightPlanner({ date }: { date: string }) {
           setPrefs({
             matrix: prefsJson.matrix ?? {},
             notes: prefsJson.notes ?? {},
+            archived: Array.isArray(prefsJson.archived) ? prefsJson.archived : [],
+            added: Array.isArray(prefsJson.added) ? prefsJson.added : [],
             updated_at: prefsJson.updated_at ?? "",
           });
         }
