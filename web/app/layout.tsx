@@ -18,6 +18,10 @@ export const metadata: Metadata = {
   title: "Bumblebeers",
   description:
     "Adult slo-pitch stats, BMBL+ rankings, lineup notes, and a 🐝 you can ask anything.",
+  // Force light theme — the app palette doesn't work in dark mode and
+  // iOS/Android otherwise auto-invert it when the device is in dark mode.
+  colorScheme: "light",
+  themeColor: "#fffbeb", // amber-50
 };
 
 // Honeycomb pattern lives on body::before in globals.css — masked radial
