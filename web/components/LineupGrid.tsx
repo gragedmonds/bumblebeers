@@ -66,18 +66,21 @@ export default function LineupGrid() {
     let cancelled = false;
     fetch("/api/lineup", { cache: "no-store" })
       .then(async (r) => {
-        const body = await r.json().catch(() => EMPTY_LINEUP);
+        const body = await r.json().catch(() => ({}));
         if (cancelled) return;
+        const lu = body.lineup ?? EMPTY_LINEUP;
         setLineup({
-          matrix: body.matrix ?? {},
-          notes: body.notes ?? {},
-          updated_at: body.updated_at ?? "",
+          matrix: lu.matrix ?? {},
+          notes: lu.notes ?? {},
+          updated_at: lu.updated_at ?? "",
         });
         setLoaded(true);
-        if (r.headers.get("x-bb-storage") === "unconfigured") {
+        if (body.error === "upstash_not_configured") {
           setServerError(
-            "Storage isn't configured yet. Changes will not persist until KV_REST_API_URL + KV_REST_API_TOKEN are set in Vercel.",
+            "Storage isn't configured yet. Changes will not persist until the Vercel Upstash Redis integration is attached (sets KV_REST_API_URL + KV_REST_API_TOKEN).",
           );
+        } else if (body.error) {
+          setServerError("Server error: " + body.error + (body.detail ? ` (${body.detail})` : ""));
         }
       })
       .catch((e) => {
@@ -131,11 +134,11 @@ export default function LineupGrid() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify(lineup),
       });
+      const body = await res.json().catch(() => ({}));
       if (!res.ok) {
-        const body = await res.json().catch(() => ({ error: res.statusText }));
         throw new Error(body.error || `HTTP ${res.status}`);
       }
-      const saved = (await res.json()) as Lineup;
+      const saved = (body.lineup ?? body) as Lineup;
       setLineup({
         matrix: saved.matrix ?? {},
         notes: saved.notes ?? {},
