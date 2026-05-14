@@ -545,6 +545,18 @@ def _compute_runners_before(raw, player_id_map):
                     if play_result:
                         # REAL at-bat. Finalize any prior runner motion, then snapshot.
                         flush_pending()
+                        # Identify the batter via the offense team's lineup
+                        # pointer. The pointer is advanced explicitly per AB
+                        # below (mirroring build_excel.GameState.register_at_bat)
+                        # because GameChanger's `goto_lineup_index` events fire
+                        # only sporadically (~5% of ABs).
+                        bat_tid = batting_tid()
+                        batter_id = None
+                        if bat_tid and bat_tid in lineup_slot:
+                            slots = lineup_slot[bat_tid]
+                            ix = lineup_idx.get(bat_tid, 0)
+                            size = max(len(slots), 1)
+                            batter_id = slots.get(ix) or slots.get(ix % size)
                         out[(eid, seq)] = {
                             "before": {
                                 "1": player_id_map.get(bases[1]) if bases[1] else None,
@@ -558,19 +570,13 @@ def _compute_runners_before(raw, player_id_map):
                             "moves": [],
                             "after": {"1": None, "2": None, "3": None},
                             "half_inning_id": f"{eid}:{half_inning_seq}",
+                            # Motion-walker's identified batter. More accurate
+                            # than build_excel's because we advance for synthetic
+                            # walks/Ks too. Used to override the XLSX batter
+                            # when they disagree (XLSX's pointer drifts after
+                            # walks/Ks).
+                            "batter_name": player_id_map.get(batter_id) if batter_id else None,
                         }
-                        # Identify the batter via the offense team's lineup
-                        # pointer. The pointer is advanced explicitly per AB
-                        # below (mirroring build_excel.GameState.register_at_bat)
-                        # because GameChanger's `goto_lineup_index` events fire
-                        # only sporadically (~5% of ABs).
-                        bat_tid = batting_tid()
-                        batter_id = None
-                        if bat_tid and bat_tid in lineup_slot:
-                            slots = lineup_slot[bat_tid]
-                            ix = lineup_idx.get(bat_tid, 0)
-                            size = max(len(slots), 1)
-                            batter_id = slots.get(ix) or slots.get(ix % size)
                         last_tx_seq = seq
                         last_tx_result = play_result
                         last_tx_batter = batter_id
@@ -796,6 +802,7 @@ def main():
         with_runners = 0
         with_moves = 0
         runs_recomputed = 0
+        batter_overridden = 0
         for ab in at_bats:
             key = (ab.get("event_id"), ab.get("transaction_seq"))
             m = motion.get(key)
@@ -824,10 +831,20 @@ def main():
                     runs_recomputed += 1
                 ab["runs_scored"] = moves_runs
                 ab["run_scoring"] = moves_runs > 0
+                # Override XLSX-derived batter when motion's lineup tracking
+                # disagrees. build_excel only advances lineup_idx on real
+                # transactions, so its batter drifts wrong after walks/Ks.
+                # The motion walker tracks both, so its batter is canonical.
+                motion_batter = m.get("batter_name")
+                if motion_batter and motion_batter != ab.get("batter"):
+                    ab["batter"] = motion_batter
+                    ab["person_key"] = pk(motion_batter)
+                    batter_overridden += 1
         print(
             f"motion: {with_runners}/{len(at_bats)} at-bats with runners on, "
             f"{with_moves} with explicit runner moves; "
-            f"recomputed runs_scored on {runs_recomputed} at-bats"
+            f"recomputed runs_scored on {runs_recomputed} at-bats; "
+            f"overrode batter on {batter_overridden} at-bats"
         )
     else:
         for ab in at_bats:
