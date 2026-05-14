@@ -254,6 +254,15 @@ def _compute_runners_before(raw, player_id_map):
                             runner_dest[rid] = new_b
                     elif new_b >= 4:
                         runner_dest[rid] = 4
+                # 2b) Sacrifice-fly heuristic: runner on 3B presumed to score
+                # if not already tagged otherwise. Scorers in older seasons
+                # routinely skipped the explicit base_running event.
+                if last_tx_result == "sacrifice_fly":
+                    rid = bases.get(3)
+                    if rid and rid not in explicit_runners and rid not in runner_dest:
+                        runner_dest[rid] = 4
+                        if next_bases.get(3) == rid:
+                            next_bases[3] = None
                 # 3) Place the batter from the prior transaction.
                 if last_tx_batter and last_tx_result:
                     target = _BATTER_LANDS_AT.get(last_tx_result)
