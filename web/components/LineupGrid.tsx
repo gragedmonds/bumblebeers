@@ -9,6 +9,7 @@ import {
   type Pos,
   POSITIONS,
 } from "@/lib/lineup";
+import { getActiveRoster, getFullRoster } from "@/lib/data";
 
 const MARK_CYCLE: Record<Mark, Mark> = {
   none: "can",
@@ -63,19 +64,28 @@ export default function LineupGrid() {
   const [saveMsg, setSaveMsg] = useState<string | null>(null);
   const [serverError, setServerError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+  const [showAll, setShowAll] = useState(false);
 
-  // Players from snapshot, ordered by career BMBL+ desc (active hitters first).
+  // Default: players who appeared in the latest season with ≥25 career PA
+  // (the regulars). Toggle "Show all" to include retirees + casual subs so
+  // their historical can/should marks remain editable.
   const players = useMemo(() => {
     if (!snapshot) return [] as { key: string; name: string }[];
-    const keys = Object.keys(snapshot.players).sort((a, b) => {
-      const ca = snapshot.career_weighted[a]?.career_BMBLplus_weighted ?? -1;
-      const cb = snapshot.career_weighted[b]?.career_BMBLplus_weighted ?? -1;
-      return cb - ca;
-    });
-    return keys.map((k) => ({
-      key: k,
-      name: snapshot.players[k].display_name || k,
-    }));
+    const roster = showAll ? getFullRoster(snapshot) : getActiveRoster(snapshot);
+    // Sort by career BMBL+ desc so the top regulars come first.
+    return roster
+      .slice()
+      .sort((a, b) => {
+        const ca = snapshot.career_weighted[a.key]?.career_BMBLplus_weighted ?? -1;
+        const cb = snapshot.career_weighted[b.key]?.career_BMBLplus_weighted ?? -1;
+        return cb - ca;
+      })
+      .map((p) => ({ key: p.key, name: p.display_name }));
+  }, [snapshot, showAll]);
+
+  const archivedCount = useMemo(() => {
+    if (!snapshot) return 0;
+    return getFullRoster(snapshot).length - getActiveRoster(snapshot).length;
   }, [snapshot]);
 
   const filtered = useMemo(() => {
@@ -191,6 +201,14 @@ export default function LineupGrid() {
           placeholder="Filter players…"
           className="min-h-11 flex-1 rounded-md border border-stone-300 px-3 py-2 text-sm"
         />
+        <label className="inline-flex items-center gap-2 text-sm text-stone-700">
+          <input
+            type="checkbox"
+            checked={showAll}
+            onChange={(e) => setShowAll(e.target.checked)}
+          />
+          Show archived ({archivedCount})
+        </label>
         <Legend />
         <span className="text-xs text-stone-500">
           Last saved: {formatTimestamp(lineup.updated_at)}

@@ -10,6 +10,7 @@ import AttendanceEditor from "./AttendanceEditor";
 import LineupBuilder from "./LineupBuilder";
 import { useSnapshot } from "@/lib/useSnapshot";
 import { EMPTY_LINEUP, type Lineup } from "@/lib/lineup";
+import { getActiveRoster } from "@/lib/data";
 import {
   emptyNight,
   type Availability,
@@ -45,12 +46,12 @@ export default function NightPlanner({ date }: { date: string }) {
   const [savedMsg, setSavedMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
-  // Roster from snapshot
+  // Active roster only — retirees + casual subs hidden so we don't show them
+  // in attendance toggles or the lineup-builder pickers. Manage the full
+  // roster (including archived) from /lineup.
   const roster = useMemo(() => {
     if (!snapshot) return [] as { key: string; display_name: string }[];
-    return Object.entries(snapshot.players)
-      .map(([key, p]) => ({ key, display_name: p.display_name || key }))
-      .sort((a, b) => a.display_name.localeCompare(b.display_name));
+    return getActiveRoster(snapshot);
   }, [snapshot]);
 
   // Attendees from night status

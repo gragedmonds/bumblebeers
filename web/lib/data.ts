@@ -135,3 +135,70 @@ export interface Snapshot {
   at_bats: AtBat[];
   mvp_nights: MvpNight[];
 }
+
+// ─── Active-roster filtering ─────────────────────────────────────────────
+// The snapshot contains every player who ever appeared (32 currently); the
+// planning UIs only care about people who actually still play. A player is
+// "active" if they showed up in the most recent season AND have enough
+// career PA to count as a regular (not a one-off guest).
+//
+// The default threshold (25 PA) excludes casual one-game appearances but
+// keeps season-long subs. Pass `{ minPA: 0 }` to include everyone who
+// played this season; pass `{ allSeasons: true }` to include retirees.
+
+const DEFAULT_MIN_CAREER_PA = 25;
+
+export interface RosterPlayer {
+  key: string;
+  display_name: string;
+}
+
+export interface RosterOptions {
+  /** Override career-PA threshold. */
+  minPA?: number;
+  /** Include players who didn't play in the most recent season (defaults false). */
+  allSeasons?: boolean;
+}
+
+/** Most recent season_year that appears anywhere in the snapshot. */
+export function latestSeason(snap: Snapshot): number {
+  let max = 0;
+  for (const p of Object.values(snap.players)) {
+    for (const s of p.seasons || []) {
+      if (s.season_year > max) max = s.season_year;
+    }
+  }
+  return max;
+}
+
+function careerPA(p: Player): number {
+  return (p.seasons || []).reduce((sum, s) => sum + (s.PA || 0), 0);
+}
+
+function playedIn(p: Player, year: number): boolean {
+  return (p.seasons || []).some((s) => s.season_year === year && s.PA > 0);
+}
+
+/** Returns the active roster — sorted alphabetically by display name. */
+export function getActiveRoster(
+  snap: Snapshot,
+  opts: RosterOptions = {},
+): RosterPlayer[] {
+  const minPA = opts.minPA ?? DEFAULT_MIN_CAREER_PA;
+  const current = latestSeason(snap);
+  const out: RosterPlayer[] = [];
+  for (const [key, p] of Object.entries(snap.players)) {
+    if (!opts.allSeasons && !playedIn(p, current)) continue;
+    if (careerPA(p) < minPA) continue;
+    out.push({ key, display_name: p.display_name || key });
+  }
+  out.sort((a, b) => a.display_name.localeCompare(b.display_name));
+  return out;
+}
+
+/** Convenience: the full roster, including retirees and one-off appearances. */
+export function getFullRoster(snap: Snapshot): RosterPlayer[] {
+  return Object.entries(snap.players)
+    .map(([key, p]) => ({ key, display_name: p.display_name || key }))
+    .sort((a, b) => a.display_name.localeCompare(b.display_name));
+}
