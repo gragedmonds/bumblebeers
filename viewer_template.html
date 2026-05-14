@@ -1,0 +1,1237 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Bumblebeers — BMBL+</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+         margin: 0; background:#0f1419; color:#e6e6e6; }
+  header { padding: 12px 20px; border-bottom: 1px solid #232a33; display:flex; justify-content:space-between; align-items:center; }
+  h1 { font-size: 18px; margin: 0; font-weight: 600; }
+  .sub { color:#8a99a8; font-size:12px; }
+  .tabs { display:flex; gap: 2px; background:#0f1419; padding: 0 20px; border-bottom: 1px solid #232a33; }
+  .tab { padding: 10px 18px; cursor:pointer; color:#8a99a8; border-bottom: 2px solid transparent; font-size:14px; font-weight:500; }
+  .tab.active { color:#3aaaff; border-bottom-color:#3aaaff; }
+  .tab-content { display:none; }
+  .tab-content.active { display:block; }
+  main { display: grid; grid-template-columns: 280px 1fr; gap: 16px; padding: 16px; max-width: 1600px; margin: 0 auto; }
+  .panel { background:#172029; border:1px solid #232a33; border-radius:8px; padding:14px; }
+  .section-title { font-size: 12px; text-transform: uppercase; letter-spacing:0.06em; color:#8a99a8; margin: 0 0 8px 0; }
+  label { display:flex; align-items:center; gap:6px; padding:3px 0; cursor:pointer; font-size:13px; }
+  label input[type=checkbox], label input[type=radio] { accent-color:#3aaaff; }
+  select, button, input[type=range] { background:#0f1419; border:1px solid #2d3744; color:#e6e6e6; border-radius:5px; padding:6px 8px; font-size:13px; }
+  input[type=range] { padding: 0; }
+  button { cursor:pointer; }
+  button:hover { background:#1c2530; }
+  button.primary { background:#1d4d7f; border-color:#3aaaff; }
+  button.primary:hover { background:#235a93; }
+  .chart-wrap { background:#172029; border:1px solid #232a33; border-radius:8px; padding:10px; height: 520px; }
+  table { width:100%; border-collapse: collapse; font-size:13px; }
+  th, td { text-align:left; padding: 4px 8px; border-bottom: 1px solid #232a33; }
+  th { color:#8a99a8; font-weight:600; font-size:11px; text-transform: uppercase; }
+  .pill { display:inline-block; padding:2px 6px; border-radius:10px; font-size:11px; background:#2d3744; }
+  .player-search { width:100%; padding:6px 8px; background:#0f1419; border:1px solid #2d3744; color:#e6e6e6; border-radius:5px; margin-bottom:6px; }
+  .scroll { max-height: 360px; overflow-y: auto; padding-right: 4px; }
+  .controls-row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:8px; }
+  .small { font-size: 11px; color:#8a99a8; margin-top: 4px; }
+  .diamond-wrap { background:#0a2a14; border:1px solid #1a4a24; border-radius:8px; padding:6px; position:relative; aspect-ratio: 1/1; max-height: 700px; }
+  .diamond-wrap svg { width:100%; height:100%; display:block; }
+  .now-card { background:#172029; border:1px solid #232a33; border-radius:8px; padding:10px; margin-top:12px; font-size:13px; min-height:60px; }
+  .legend { display:flex; flex-wrap:wrap; gap:8px; font-size:11px; color:#8a99a8; margin-top:6px; }
+  .legend .item { display:flex; align-items:center; gap:4px; }
+  .legend .dot { width:9px; height:9px; border-radius:50%; }
+  .speed-readout { font-variant-numeric: tabular-nums; color:#8a99a8; font-size:11px; }
+  .hchip { display:inline-block; padding:3px 9px; border-radius:11px; background:#222d39; color:#cdd6e0; font-size:11px; cursor:pointer; border:1px solid #2d3744; user-select:none; }
+  .hchip:hover { background:#2d3744; color:#fff; border-color:#3aaaff; }
+  .hchip-group { display:flex; gap:3px; padding:0 4px 0 0; border-right:1px solid #232a33; margin-right:2px; }
+  .hchip-label { color:#5a6772; font-size:10px; align-self:center; margin-right:4px; text-transform:uppercase; letter-spacing:0.05em; }
+  .mvp-night { background:#172029; border:1px solid #232a33; border-radius:10px; padding:14px 16px; margin-bottom:12px; }
+  .mvp-night.headlined { border-color:#ffd24a; background:linear-gradient(140deg,#22220e,#172029); }
+  .mvp-date { font-size:13px; color:#8a99a8; }
+  .mvp-headline { font-size:18px; font-weight:600; color:#ffd24a; margin:3px 0 6px 0; display:flex; align-items:center; gap:8px;}
+  .mvp-headline .can { font-size:22px; }
+  .mvp-just { color:#c8d2dd; font-size:14px; line-height:1.45; margin-top:6px; }
+  .mvp-just b { color:#ffd24a; }
+  .mvp-row { display:flex; gap:14px; flex-wrap:wrap; font-size:12px; color:#8a99a8; margin-top:8px; }
+  .mvp-row .stat { background:#0e1620; padding:4px 8px; border-radius:6px; }
+  .mvp-row .stat b { color:#e6e6e6; font-weight:600; margin-right:3px; }
+  .mvp-others { margin-top:10px; font-size:12px; color:#8a99a8; }
+  .mvp-others-row { display:flex; gap:10px; padding:3px 0; }
+  .mvp-others-row .name { color:#cdd6e0; min-width:90px; }
+  .mvp-section-title { color:#8a99a8; font-size:11px; text-transform:uppercase; letter-spacing:0.05em; margin:0 0 8px 0; }
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>Bumblebeers — Player Analytics</h1>
+    <div class="sub">BMBL+ trends, career rollups, and spray-chart playback</div>
+  </div>
+  <div class="sub" id="meta"></div>
+</header>
+
+<div class="tabs">
+  <div class="tab active" data-tab="trends">Trends</div>
+  <div class="tab" data-tab="diamond">Diamond</div>
+  <div class="tab" data-tab="mvp">🍺 MVP</div>
+</div>
+
+<!-- =================== TRENDS TAB =================== -->
+<div class="tab-content active" id="tab-trends">
+<main>
+  <aside class="panel">
+    <p class="section-title">Players</p>
+    <input class="player-search" id="search" placeholder="Search…" />
+    <div class="controls-row">
+      <button onclick="selectTop(5)">Top 5</button>
+      <button onclick="selectTop(10)">Top 10</button>
+      <button onclick="selectAll(false)">Clear</button>
+    </div>
+    <div class="scroll" id="players"></div>
+    <hr style="border-color:#232a33; margin: 14px 0;">
+    <p class="section-title">View</p>
+    <div class="controls-row">
+      <select id="metric">
+        <option value="bmbl">BMBL+ (season)</option>
+        <option value="wOBA">wOBA</option>
+        <option value="pa">PA per game</option>
+        <option value="hits">Hits per game</option>
+      </select>
+      <select id="gran">
+        <option value="season">Season</option>
+        <option value="game5">5-game rolling</option>
+        <option value="game">Per game</option>
+      </select>
+    </div>
+    <p class="section-title">Year range</p>
+    <div class="controls-row">
+      <select id="ymin"></select>
+      <span>—</span>
+      <select id="ymax"></select>
+    </div>
+    <p class="small">BMBL+: 100 = team-season average. 1 stddev = 25 points.<br>Per-game wOBA uses Bayesian shrinkage (k=50 PA) toward season mean.</p>
+  </aside>
+  <section>
+    <div class="chart-wrap"><canvas id="chart"></canvas></div>
+    <div class="panel" style="margin-top:16px;">
+      <p class="section-title">Selected players — career rollup</p>
+      <div id="career-table"></div>
+    </div>
+  </section>
+</main>
+</div>
+
+<!-- =================== DIAMOND TAB =================== -->
+<div class="tab-content" id="tab-diamond">
+<main>
+  <aside class="panel">
+    <p class="section-title">Mode</p>
+    <label><input type="radio" name="dmode" value="career" checked> Career playback (one player)</label>
+    <label><input type="radio" name="dmode" value="season"> Season playback (everyone)</label>
+    <label><input type="radio" name="dmode" value="all"> All seasons (everything)</label>
+
+    <div id="career-controls">
+      <p class="section-title" style="margin-top:14px;">Player</p>
+      <select id="dplayer" style="width:100%"></select>
+    </div>
+    <div id="season-controls" style="display:none;">
+      <p class="section-title" style="margin-top:14px;">Season</p>
+      <select id="dseason" style="width:100%"></select>
+    </div>
+    <div id="all-controls" style="display:none;">
+      <p class="small" style="margin-top:10px;">Plays every Bumblebees at-bat ever tracked (2018–2025), in chronological order. Recommend speed ≤ 0.05 s/play.</p>
+    </div>
+
+    <p class="section-title" style="margin-top:14px;">Playback</p>
+    <div class="controls-row">
+      <button class="primary" id="dplay">▶ Play</button>
+      <button id="dpause">⏸ Pause</button>
+      <button id="dshowall" title="Render all markers instantly">⤓ Show all</button>
+      <button id="drestart">⏮ Restart</button>
+    </div>
+    <div style="margin-top:6px;">
+      <div class="speed-readout">Speed: <span id="dspeed-out">0.25</span> s/play</div>
+      <input type="range" id="dspeed" min="0.01" max="2" step="0.01" value="0.25" style="width:100%">
+    </div>
+
+    <p class="section-title" style="margin-top:14px;">Quick filter</p>
+    <select id="dpreset" style="width:100%">
+      <option value="all" selected>All at-bats</option>
+      <option value="hits">All hits</option>
+      <option value="xbh">Extra-base hits only (2B/3B/HR)</option>
+      <option value="hr">Home runs only</option>
+      <option value="runs">Run-scoring events</option>
+      <option value="of_hits">Hits to outfield only</option>
+      <option value="if_hits">Hits to infield only</option>
+      <option value="outs">Outs only</option>
+      <option value="line_drives">Line drives only</option>
+      <option value="ground_balls">Ground balls only</option>
+      <option value="left">Pulled left / left-side</option>
+      <option value="right">Pulled right / right-side</option>
+      <option value="middle">Up the middle</option>
+    </select>
+
+    <details style="margin-top:10px;">
+      <summary class="section-title" style="cursor:pointer;">Advanced filters</summary>
+      <div style="padding:6px 0 0 4px;">
+        <p class="section-title">Result type</p>
+        <label><input type="checkbox" class="fres" value="single" checked> Single (1B)</label>
+        <label><input type="checkbox" class="fres" value="double" checked> Double (2B)</label>
+        <label><input type="checkbox" class="fres" value="triple" checked> Triple (3B)</label>
+        <label><input type="checkbox" class="fres" value="home_run" checked> Home run</label>
+        <label><input type="checkbox" class="fres" value="outs" checked> Outs (any)</label>
+        <label><input type="checkbox" class="fres" value="sacrifice_fly" checked> Sac fly</label>
+        <label><input type="checkbox" class="fres" value="fielders_choice" checked> Fielder's choice</label>
+        <label><input type="checkbox" class="fres" value="error" checked> Reached on error</label>
+
+        <p class="section-title" style="margin-top:8px;">Play type</p>
+        <label><input type="checkbox" class="fpt" value="line_drive" checked> Line drive</label>
+        <label><input type="checkbox" class="fpt" value="fly_ball" checked> Fly ball</label>
+        <label><input type="checkbox" class="fpt" value="ground_ball" checked> Ground ball</label>
+        <label><input type="checkbox" class="fpt" value="pop_fly" checked> Pop fly</label>
+        <label><input type="checkbox" class="fpt" value="bunt" checked> Bunt / other</label>
+
+        <p class="section-title" style="margin-top:8px;">Field zone</p>
+        <label><input type="checkbox" class="fzone" value="infield" checked> Infield</label>
+        <label><input type="checkbox" class="fzone" value="outfield" checked> Outfield</label>
+
+        <p class="section-title" style="margin-top:8px;">Field side</p>
+        <label><input type="checkbox" class="fside" value="left" checked> Left side</label>
+        <label><input type="checkbox" class="fside" value="middle" checked> Middle</label>
+        <label><input type="checkbox" class="fside" value="right" checked> Right side</label>
+
+        <p class="section-title" style="margin-top:8px;">Other</p>
+        <label><input type="checkbox" id="fonlyruns"> Only run-scoring at-bats</label>
+      </div>
+    </details>
+
+    <p class="section-title" style="margin-top:14px;">Display</p>
+    <label><input type="checkbox" id="dtrails" checked> Persistent fading markers</label>
+    <label><input type="checkbox" id="dlabels"> Show batter labels</label>
+
+    <div class="now-card" id="dnow">
+      <em style="color:#8a99a8">Press Play to start.</em>
+    </div>
+  </aside>
+
+  <section>
+    <div class="diamond-wrap">
+      <svg id="diamond" viewBox="-110 -110 510 510" preserveAspectRatio="xMidYMid meet">
+        <!-- Outfield grass arc -->
+        <defs>
+          <radialGradient id="grass" cx="50%" cy="100%" r="100%">
+            <stop offset="0%" stop-color="#1a5a2c"/>
+            <stop offset="100%" stop-color="#0a2a14"/>
+          </radialGradient>
+          <linearGradient id="dirt" x1="0" x2="0" y1="0" y2="1">
+            <stop offset="0%" stop-color="#8a5a35"/>
+            <stop offset="100%" stop-color="#6b3f20"/>
+          </linearGradient>
+        </defs>
+        <!-- Foul territory background -->
+        <rect x="-110" y="-110" width="510" height="510" fill="#0a1a10"/>
+        <!-- Fair territory: triangle bounded by foul lines from home, then outfield arc -->
+        <path d="M 160 320 L -100 60 A 320 320 0 0 1 420 60 L 160 320 Z" fill="url(#grass)"/>
+        <!-- Outfield warning track arc (slight visual depth) -->
+        <path d="M -100 60 A 320 320 0 0 1 420 60" stroke="#0a2a14" stroke-width="6" fill="none"/>
+        <!-- Infield dirt (diamond rotated 45°) -->
+        <polygon points="160,320 285,205 160,90 35,205" fill="url(#dirt)"/>
+        <!-- Pitcher's mound -->
+        <circle cx="160" cy="220" r="14" fill="#7a4f2a"/>
+        <circle cx="160" cy="220" r="6"  fill="#3a2510"/>
+        <!-- Bases -->
+        <rect x="155" y="315" width="10" height="10" fill="#ffffff" transform="rotate(45 160 320)"/>   <!-- home -->
+        <rect x="280" y="200" width="10" height="10" fill="#ffffff" transform="rotate(45 285 205)"/>  <!-- 1B -->
+        <rect x="155" y="85"  width="10" height="10" fill="#ffffff" transform="rotate(45 160 90)"/>   <!-- 2B -->
+        <rect x="30"  y="200" width="10" height="10" fill="#ffffff" transform="rotate(45 35 205)"/>   <!-- 3B -->
+        <!-- Foul lines -->
+        <line x1="160" y1="320" x2="-100" y2="60"  stroke="#ffffff" stroke-width="1.5" opacity="0.6"/>
+        <line x1="160" y1="320" x2="420"  y2="60"  stroke="#ffffff" stroke-width="1.5" opacity="0.6"/>
+        <!-- Position labels (faint) -->
+        <g fill="#a0d6b0" font-size="11" font-family="-apple-system,sans-serif" opacity="0.45">
+          <text x="160" y="50" text-anchor="middle">CF</text>
+          <text x="30"  y="75" text-anchor="middle">LF</text>
+          <text x="290" y="75" text-anchor="middle">RF</text>
+          <text x="100" y="155" text-anchor="middle">SS</text>
+          <text x="220" y="155" text-anchor="middle">2B</text>
+          <text x="60"  y="220" text-anchor="middle">3B</text>
+          <text x="260" y="220" text-anchor="middle">1B</text>
+          <text x="160" y="200" text-anchor="middle">P</text>
+        </g>
+        <!-- Layer groups (filled in by JS) -->
+        <g id="trail-layer"></g>
+        <g id="active-layer"></g>
+      </svg>
+    </div>
+    <div class="legend" id="dlegend"></div>
+    <div class="panel" style="margin-top:8px; padding:8px 10px;">
+      <p class="section-title" style="margin:0 0 4px 0;">Hover to highlight matching markers</p>
+      <div id="dhighlight" style="display:flex; flex-wrap:wrap; gap:4px;"></div>
+    </div>
+    <div class="panel" style="margin-top:12px;">
+      <p class="section-title">Progress</p>
+      <div id="dprogress" class="small">Idle</div>
+    </div>
+  </section>
+</main>
+</div>
+
+<!-- =================== MVP TAB =================== -->
+<div class="tab-content" id="tab-mvp">
+<main style="grid-template-columns: 240px 1fr;">
+  <aside class="panel">
+    <p class="section-title">🍺 Tall Can recipient</p>
+    <p class="small">For each game night (typically a doubleheader), the player with the highest MVP score gets the Tall Can. Justification is shown when the race is close.</p>
+    <p class="section-title" style="margin-top:14px;">Filter</p>
+    <label class="small" style="display:block;margin-top:6px;">Season</label>
+    <select id="mvpSeason" style="width:100%"></select>
+    <label class="small" style="display:block;margin-top:10px;">Player (career view)</label>
+    <select id="mvpPlayer" style="width:100%"></select>
+    <p class="section-title" style="margin-top:14px;">Tall Can tally</p>
+    <div id="mvpTally" class="small">—</div>
+    <p class="small" style="margin-top:14px;">MVP score weights: TB ×1.5, runs scored ×1.2, HR ×1.5 bonus, XBH ×0.8 bonus, SF ×0.5, outs penalized ×0.4.</p>
+  </aside>
+  <section id="mvp-list" style="min-height:400px;"></section>
+</main>
+</div>
+
+<script>
+const DATA = __DATA__;
+const COLORS = ["#3aaaff","#ffd24a","#ff7a59","#69d68f","#c084fc","#f472b6","#22d3ee","#fbbf24","#a3e635","#fb7185","#60a5fa","#34d399"];
+
+// ---------------- Tab switching ----------------
+document.querySelectorAll(".tab").forEach(t => {
+  t.onclick = () => {
+    document.querySelectorAll(".tab").forEach(x => x.classList.remove("active"));
+    document.querySelectorAll(".tab-content").forEach(x => x.classList.remove("active"));
+    t.classList.add("active");
+    document.getElementById("tab-" + t.dataset.tab).classList.add("active");
+    if (t.dataset.tab === "diamond" && !window.__diamondInit) {
+      window.__diamondInit = true;
+      initDiamond();
+    }
+  };
+});
+
+// ---------------- Trends tab (unchanged) ----------------
+const players = DATA.players;
+const playerKeys = Object.keys(players).sort((a,b)=>{
+  const ca = (DATA.career_weighted[a]||{}).career_BMBLplus_weighted || -999;
+  const cb = (DATA.career_weighted[b]||{}).career_BMBLplus_weighted || -999;
+  return cb - ca;
+});
+const selected = new Set(playerKeys.slice(0, 5));
+let chart = null;
+const allYears = new Set();
+playerKeys.forEach(k => (players[k].seasons||[]).forEach(s => allYears.add(s.season_year)));
+const years = [...allYears].sort();
+const ymin = document.getElementById("ymin"), ymax = document.getElementById("ymax");
+years.forEach(y => { ymin.add(new Option(y, y)); ymax.add(new Option(y, y)); });
+ymin.value = years[0]; ymax.value = years[years.length-1];
+document.getElementById("meta").textContent = `${playerKeys.length} players • ${years[0]}–${years[years.length-1]}`;
+
+function renderPlayerList() {
+  const search = document.getElementById("search").value.toLowerCase();
+  const root = document.getElementById("players");
+  root.innerHTML = "";
+  playerKeys.forEach(k => {
+    const p = players[k];
+    if (search && !p.display_name.toLowerCase().includes(search)) return;
+    const lbl = document.createElement("label");
+    const c = document.createElement("input");
+    c.type = "checkbox"; c.checked = selected.has(k); c.dataset.key = k;
+    c.onchange = e => { e.target.checked ? selected.add(k) : selected.delete(k); refresh(); };
+    const career = DATA.career_weighted[k];
+    const careerScore = career ? career.career_BMBLplus_weighted.toFixed(1) : "—";
+    lbl.append(c, ` ${p.display_name} `);
+    const pill = document.createElement("span"); pill.className="pill";
+    pill.textContent = careerScore;
+    lbl.append(pill);
+    root.append(lbl);
+  });
+}
+document.getElementById("search").oninput = renderPlayerList;
+function selectTop(n) { selected.clear(); playerKeys.slice(0,n).forEach(k => selected.add(k)); renderPlayerList(); refresh(); }
+function selectAll(yes) { yes ? playerKeys.forEach(k => selected.add(k)) : selected.clear(); renderPlayerList(); refresh(); }
+function rollingAvg(arr, k, key) {
+  const out = [];
+  for (let i=0;i<arr.length;i++) {
+    const slice = arr.slice(Math.max(0, i-k+1), i+1);
+    const vals = slice.map(x => x[key]).filter(v => v != null && !isNaN(v));
+    if (vals.length === 0) { out.push({...arr[i], _val: null}); continue; }
+    out.push({...arr[i], _val: vals.reduce((a,b)=>a+b,0)/vals.length });
+  }
+  return out;
+}
+function refresh() {
+  const metric = document.getElementById("metric").value;
+  const gran   = document.getElementById("gran").value;
+  const lo = +ymin.value, hi = +ymax.value;
+  const datasets = [];
+  const sortedSel = [...selected].sort((a,b)=>playerKeys.indexOf(a)-playerKeys.indexOf(b));
+  sortedSel.forEach((k, idx) => {
+    const p = players[k]; const color = COLORS[idx % COLORS.length];
+    if (gran === "season") {
+      const seasons = (p.seasons||[]).filter(s => s.season_year>=lo && s.season_year<=hi).sort((a,b)=>a.season_year-b.season_year);
+      const xs = seasons.map(s => String(s.season_year));
+      let ys;
+      if (metric === "bmbl") ys = seasons.map(s => s.BMBL_plus);
+      else if (metric === "wOBA") ys = seasons.map(s => s.wOBA);
+      else if (metric === "pa") ys = seasons.map(s => s.PA);
+      else ys = seasons.map(_ => null);
+      datasets.push({ label: p.display_name, data: xs.map((x,i)=>({x, y: ys[i]})), borderColor:color, backgroundColor:color, tension:0.2, pointRadius:4 });
+    } else {
+      const games = (p.games||[]).filter(g => g.season_year>=lo && g.season_year<=hi).sort((a,b)=> (a.date||"").localeCompare(b.date||""));
+      let key = (metric === "wOBA" || metric === "bmbl") ? "wOBA_game" : (metric === "pa" ? "PA" : "H");
+      const window = gran === "game5" ? 5 : 1;
+      const smoothed = rollingAvg(games, window, key);
+      const xs = smoothed.map(g => g.date); const ys = smoothed.map(g => g._val);
+      datasets.push({ label: p.display_name, data: xs.map((x,i)=>({x, y: ys[i]})), borderColor:color, backgroundColor:color, tension:0.25, pointRadius: window===1?2:0 });
+    }
+  });
+  const allX = [];
+  const seen = new Set();
+  datasets.forEach(ds => ds.data.forEach(pt => { if (!seen.has(pt.x)) { seen.add(pt.x); allX.push(pt.x); } }));
+  allX.sort();
+  const finalSets = datasets.map(ds => {
+    const map = new Map(ds.data.map(p => [p.x, p.y]));
+    return { ...ds, data: allX.map(x => map.has(x) ? map.get(x) : null), spanGaps: true };
+  });
+  if (chart) chart.destroy();
+  const ctx = document.getElementById("chart").getContext("2d");
+  chart = new Chart(ctx, {
+    type: "line",
+    data: { labels: allX, datasets: finalSets },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: false,
+      interaction: { mode: "nearest", intersect: false },
+      plugins: { legend: { labels: { color: "#e6e6e6" } }, tooltip: { mode: "nearest", intersect: false } },
+      scales: { x: { type: "category", ticks: { color:"#8a99a8", maxTicksLimit: 14, autoSkip: true }, grid: { color:"#232a33" } },
+                y: { ticks: { color:"#8a99a8" }, grid: { color:"#232a33" } } }
+    }
+  });
+  renderCareerTable(sortedSel);
+}
+function renderCareerTable(keys) {
+  const root = document.getElementById("career-table");
+  if (keys.length===0) { root.innerHTML = "<em style='color:#8a99a8'>Select players</em>"; return; }
+  let html = "<table><thead><tr><th>Player</th><th>Seasons</th><th>Career PA</th><th>Career BMBL+ (weighted)</th><th>Peak season</th><th>Peak BMBL+</th></tr></thead><tbody>";
+  keys.forEach(k => {
+    const c = DATA.career_weighted[k]; const p = players[k];
+    if (!c) { html += `<tr><td>${p.display_name}</td><td colspan=5 style="color:#8a99a8">no qualified seasons</td></tr>`; return; }
+    html += `<tr><td>${c.display_name}</td><td>${c.seasons_played}</td><td>${c.career_PA}</td><td><b>${c.career_BMBLplus_weighted.toFixed(1)}</b></td><td>${c.peak_season_year}</td><td>${c.peak_BMBLplus.toFixed(1)}</td></tr>`;
+  });
+  html += "</tbody></table>";
+  root.innerHTML = html;
+}
+document.getElementById("metric").onchange = refresh;
+document.getElementById("gran").onchange = refresh;
+document.getElementById("ymin").onchange = refresh;
+document.getElementById("ymax").onchange = refresh;
+renderPlayerList(); refresh();
+
+// ---------------- DIAMOND TAB ----------------
+const RESULT_COLORS = {
+  single:           "#69d68f",
+  double:           "#3aaaff",
+  triple:           "#c084fc",
+  home_run:         "#ffd24a",
+  sacrifice_fly:    "#94a3b8",
+  fielders_choice:  "#fb923c",
+  error:            "#a3e635",
+  batter_out:                 "#ef4444",
+  batter_out_advance_runners: "#ef4444",
+  infield_fly:                "#dc2626",
+  other_out:                  "#b91c1c",
+  dropped_third_strike_batter_out: "#b91c1c",
+};
+function colorFor(result) { return RESULT_COLORS[result] || "#8a99a8"; }
+function groupFor(result) {
+  if (["single","double","triple","home_run"].includes(result)) return "hits";
+  if (result && result.includes("out")) return "outs";
+  return "other";
+}
+
+const atbats = DATA.at_bats || [];
+let playState = { idx: 0, playing: false, timer: null };
+
+function initDiamond() {
+  const playerSel = document.getElementById("dplayer");
+  const seasonSel = document.getElementById("dseason");
+
+  const playersForDiamond = {};
+  atbats.forEach(ab => {
+    if (!ab.person_key) return;
+    if (!playersForDiamond[ab.person_key]) playersForDiamond[ab.person_key] = { display_name: ab.batter || ab.person_key, n: 0 };
+    playersForDiamond[ab.person_key].n++;
+  });
+  const orderedKeys = Object.keys(playersForDiamond).sort((a,b)=>playersForDiamond[b].n - playersForDiamond[a].n);
+  orderedKeys.forEach(k => playerSel.add(new Option(`${playersForDiamond[k].display_name} (${playersForDiamond[k].n})`, k)));
+  if (orderedKeys.length) playerSel.value = orderedKeys[0];
+
+  const seasonsSet = new Set();
+  atbats.forEach(ab => seasonsSet.add(ab.season_year));
+  [...seasonsSet].sort().forEach(y => seasonSel.add(new Option(y, y)));
+  seasonSel.value = [...seasonsSet].sort().pop();
+
+  document.querySelectorAll("input[name=dmode]").forEach(r => r.onchange = () => {
+    const m = document.querySelector("input[name=dmode]:checked").value;
+    document.getElementById("career-controls").style.display = (m === "career") ? "" : "none";
+    document.getElementById("season-controls").style.display = (m === "season") ? "" : "none";
+    document.getElementById("all-controls").style.display    = (m === "all")    ? "" : "none";
+    resetPlayback();
+  });
+  playerSel.onchange = resetPlayback;
+  seasonSel.onchange = resetPlayback;
+  document.querySelectorAll(".dfilter").forEach(c => c.onchange = resetPlayback);
+
+  document.getElementById("dplay").onclick = playPlayback;
+  document.getElementById("dpause").onclick = pausePlayback;
+  document.getElementById("drestart").onclick = () => { resetPlayback(); playPlayback(); };
+  document.getElementById("dshowall").onclick = showAll;
+
+  const sp = document.getElementById("dspeed");
+  const spo = document.getElementById("dspeed-out");
+  sp.oninput = () => { spo.textContent = (+sp.value).toFixed(2); if (playState.playing) { pausePlayback(); playPlayback(); } };
+
+  buildLegend();
+  buildHighlightChips();
+  // Wire preset dropdown
+  const presetEl = document.getElementById("dpreset");
+  if (presetEl) {
+    presetEl.onchange = () => { applyPreset(presetEl.value); resetPlayback(); };
+  }
+  // Any change on the granular filter checkboxes -> mark preset as custom
+  document.querySelectorAll(".fres, .fpt, .fzone, .fside, #fonlyruns").forEach(c => {
+    c.onchange = () => { if (presetEl) presetEl.value = "all"; resetPlayback(); };
+  });
+  resetPlayback();
+}
+function buildLegend() {
+  const root = document.getElementById("dlegend");
+  const labels = [
+    ["single","1B"], ["double","2B"], ["triple","3B"], ["home_run","HR"],
+    ["sacrifice_fly","SF"], ["fielders_choice","FC"], ["error","ROE"],
+    ["batter_out","Out"]
+  ];
+  root.innerHTML = labels.map(([k,t])=>`<span class="item"><span class="dot" style="background:${RESULT_COLORS[k]}"></span>${t}</span>`).join("");
+}
+
+function buildHighlightChips() {
+  const root = document.getElementById("dhighlight");
+  if (!root) return;
+  // Discover available seasons in the dataset
+  const seasons = [...new Set(atbats.map(a => a.season_year))].sort();
+  const groups = [
+    { label: "Season", chips: seasons.map(y => ({ text: String(y), attr: "season", val: String(y) })) },
+    { label: "Hit", chips: [
+        {text:"1B", attr:"result", val:"single"},
+        {text:"2B", attr:"result", val:"double"},
+        {text:"3B", attr:"result", val:"triple"},
+        {text:"HR", attr:"result", val:"home_run"},
+    ]},
+    { label: "Outcome", chips: [
+        {text:"RBI events", attr:"rs", val:"true"},
+        {text:"SF", attr:"result", val:"sacrifice_fly"},
+        {text:"ROE", attr:"result", val:"error"},
+        {text:"FC", attr:"result", val:"fielders_choice"},
+    ]},
+    { label: "Zone", chips: [
+        {text:"Outfield", attr:"zone", val:"outfield"},
+        {text:"Infield",  attr:"zone", val:"infield"},
+        {text:"Left",     attr:"side", val:"left"},
+        {text:"Middle",   attr:"side", val:"middle"},
+        {text:"Right",    attr:"side", val:"right"},
+    ]},
+    { label: "Contact", chips: [
+        {text:"Line drive", attr:"pt", val:"line_drive"},
+        {text:"Fly ball",   attr:"pt", val:"fly_ball"},
+        {text:"Grounder",   attr:"pt", val:"ground_ball"},
+        {text:"Hard GB",    attr:"pt", val:"hard_ground_ball"},
+        {text:"Pop fly",    attr:"pt", val:"pop_fly"},
+    ]},
+  ];
+  let html = "";
+  for (const g of groups) {
+    html += `<span class="hchip-group"><span class="hchip-label">${g.label}</span>`;
+    for (const c of g.chips) html += `<span class="hchip" data-attr="${c.attr}" data-val="${c.val}">${c.text}</span>`;
+    html += `</span>`;
+  }
+  root.innerHTML = html;
+  root.querySelectorAll(".hchip").forEach(chip => {
+    chip.onmouseenter = () => highlightDots(chip.dataset.attr, chip.dataset.val);
+    chip.onmouseleave = () => restoreDots();
+  });
+}
+
+function highlightDots(attr, val) {
+  const dots = document.getElementById("trail-layer").querySelectorAll("circle, text");
+  dots.forEach(d => {
+    const m = (d.dataset[attr] === val);
+    if (d.tagName === "circle") {
+      d.setAttribute("opacity", m ? 0.95 : 0.04);
+      d.setAttribute("r", m ? 5 : 2.5);
+    } else {
+      d.setAttribute("opacity", m ? 0.9 : 0.04);
+    }
+  });
+}
+function restoreDots() {
+  const dots = document.getElementById("trail-layer").querySelectorAll("circle, text");
+  dots.forEach(d => {
+    if (d.tagName === "circle") {
+      d.setAttribute("opacity", "0.18");
+      d.setAttribute("r", "3");
+    } else {
+      d.setAttribute("opacity", "0.15");
+    }
+  });
+}
+const _OUT_RESULTS = new Set(["batter_out","batter_out_advance_runners","infield_fly","other_out","dropped_third_strike_batter_out"]);
+
+function getSequence() {
+  const mode = document.querySelector("input[name=dmode]:checked").value;
+  let seq;
+  if (mode === "career") {
+    const pkSel = document.getElementById("dplayer").value;
+    seq = atbats.filter(ab => ab.person_key === pkSel);
+  } else if (mode === "season") {
+    const sy = +document.getElementById("dseason").value;
+    seq = atbats.filter(ab => ab.season_year === sy);
+  } else {
+    seq = atbats.slice();
+  }
+  const resOk  = new Set([...document.querySelectorAll(".fres:checked")].map(c => c.value));
+  const ptOk   = new Set([...document.querySelectorAll(".fpt:checked")].map(c => c.value));
+  const zoneOk = new Set([...document.querySelectorAll(".fzone:checked")].map(c => c.value));
+  const sideOk = new Set([...document.querySelectorAll(".fside:checked")].map(c => c.value));
+  const onlyRuns = document.getElementById("fonlyruns").checked;
+  seq = seq.filter(ab => {
+    const r = ab.result || "";
+    const inResultFilter = resOk.has(r) || (resOk.has("outs") && _OUT_RESULTS.has(r));
+    if (!inResultFilter) return false;
+    const pt = ab.play_type || "";
+    const inPtFilter = ptOk.has(pt) || (ptOk.has("ground_ball") && pt === "hard_ground_ball") || (ptOk.has("bunt") && (pt === "bunt" || pt === "other"));
+    if (!inPtFilter) return false;
+    if (!zoneOk.has(ab.field_zone || "infield")) return false;
+    if (!sideOk.has(ab.field_side || "middle")) return false;
+    if (onlyRuns && !ab.run_scoring) return false;
+    return true;
+  });
+  seq.sort((a,b) => (a.date||"").localeCompare(b.date||"") || a.transaction_seq - b.transaction_seq);
+  return seq;
+}
+
+function applyPreset(p) {
+  const setAll = (sel, vals) => document.querySelectorAll(sel).forEach(c => c.checked = (vals === true) || (Array.isArray(vals) && vals.includes(c.value)));
+  // start fully open
+  setAll(".fres", true); setAll(".fpt", true); setAll(".fzone", true); setAll(".fside", true);
+  document.getElementById("fonlyruns").checked = false;
+  if (p === "hits")            setAll(".fres", ["single","double","triple","home_run"]);
+  else if (p === "xbh")        setAll(".fres", ["double","triple","home_run"]);
+  else if (p === "hr")         setAll(".fres", ["home_run"]);
+  else if (p === "runs")       { document.getElementById("fonlyruns").checked = true; }
+  else if (p === "of_hits")    { setAll(".fres", ["single","double","triple","home_run"]); setAll(".fzone", ["outfield"]); }
+  else if (p === "if_hits")    { setAll(".fres", ["single","double","triple","home_run"]); setAll(".fzone", ["infield"]); }
+  else if (p === "outs")       setAll(".fres", ["outs"]);
+  else if (p === "line_drives")setAll(".fpt", ["line_drive"]);
+  else if (p === "ground_balls")setAll(".fpt", ["ground_ball"]);
+  else if (p === "left")       setAll(".fside", ["left"]);
+  else if (p === "right")      setAll(".fside", ["right"]);
+  else if (p === "middle")     setAll(".fside", ["middle"]);
+}
+function resetPlayback() {
+  pausePlayback();
+  playState.idx = 0;
+  document.getElementById("trail-layer").innerHTML = "";
+  document.getElementById("active-layer").innerHTML = "";
+  const seq = getSequence();
+  document.getElementById("dprogress").textContent = `${seq.length} at-bats queued`;
+  if (seq.length === 0) {
+    document.getElementById("dnow").innerHTML = `<em style='color:#8a99a8'>No at-bats match the current filters.</em>`;
+    return;
+  }
+  // Default: paint all matching markers immediately so the user can hover-explore
+  // without waiting. Play button will clear and animate from the start.
+  showAll();
+  document.getElementById("dnow").innerHTML = `<em style='color:#8a99a8'>${seq.length} at-bats shown. Hover chips to highlight, or press Play to animate from start.</em>`;
+}
+function pausePlayback() {
+  playState.playing = false;
+  if (playState.timer) { clearTimeout(playState.timer); playState.timer = null; }
+}
+function playPlayback() {
+  if (playState.playing) return;
+  const seq = getSequence();
+  // If the diamond is already fully painted (from showAll/reset default), clear
+  // and start fresh so Play always animates from the beginning.
+  if (playState.idx >= seq.length) {
+    playState.idx = 0;
+    document.getElementById("trail-layer").innerHTML = "";
+    document.getElementById("active-layer").innerHTML = "";
+  }
+  playState.playing = true;
+  step();
+}
+function step() {
+  if (!playState.playing) return;
+  const seq = getSequence();
+  if (playState.idx >= seq.length) {
+    playState.playing = false;
+    document.getElementById("dnow").innerHTML = `<em>Finished. ${seq.length} at-bats played.</em>`;
+    return;
+  }
+  const ab = seq[playState.idx];
+  animateAtBat(ab);
+  document.getElementById("dnow").innerHTML = formatNowCard(ab);
+  document.getElementById("dprogress").textContent = `${playState.idx+1} / ${seq.length} (${ab.date})`;
+  playState.idx++;
+  const speedMs = (+document.getElementById("dspeed").value) * 1000;
+  playState.timer = setTimeout(step, speedMs);
+}
+function showAll() {
+  pausePlayback();
+  const seq = getSequence();
+  const trail = document.getElementById("trail-layer");
+  const NS = "http://www.w3.org/2000/svg";
+  const showDots = document.getElementById("dtrails").checked;
+  const showLabels = document.getElementById("dlabels").checked;
+  const mode = document.querySelector("input[name=dmode]:checked").value;
+  const startIdx = Math.max(0, playState.idx);
+  const frag = document.createDocumentFragment();
+  for (let i = startIdx; i < seq.length; i++) {
+    const ab = seq[i];
+    if (ab.x == null || ab.y == null) continue;
+    const c = colorFor(ab.result);
+    if (showDots) {
+      const dot = document.createElementNS(NS, "circle");
+      dot.setAttribute("cx", ab.x); dot.setAttribute("cy", ab.y);
+      dot.setAttribute("r", 3); dot.setAttribute("fill", c); dot.setAttribute("opacity", "0.18");
+      dot.dataset.season = String(ab.season_year);
+      dot.dataset.result = ab.result || "";
+      dot.dataset.pt = ab.play_type || "";
+      dot.dataset.zone = ab.field_zone || "";
+      dot.dataset.side = ab.field_side || "";
+      dot.dataset.rs = ab.run_scoring ? "true" : "false";
+      dot.dataset.person = ab.person_key || "";
+      frag.appendChild(dot);
+    }
+    if (showLabels) {
+      let lblText;
+      if (mode === "career" && ab.date) {
+        const d = new Date(ab.date + "T00:00:00");
+        lblText = d.toLocaleString("en-US", { month: "short", year: "numeric" });
+      } else {
+        lblText = ab.batter || "";
+      }
+      const lbl = document.createElementNS(NS, "text");
+      lbl.setAttribute("x", ab.x + 6); lbl.setAttribute("y", ab.y);
+      lbl.setAttribute("fill", "#e6e6e6"); lbl.setAttribute("font-size", "9");
+      lbl.setAttribute("opacity", "0.15");
+      lbl.dataset.season = String(ab.season_year);
+      lbl.dataset.result = ab.result || "";
+      lbl.dataset.pt = ab.play_type || "";
+      lbl.dataset.zone = ab.field_zone || "";
+      lbl.dataset.side = ab.field_side || "";
+      lbl.dataset.rs = ab.run_scoring ? "true" : "false";
+      lbl.textContent = lblText;
+      frag.appendChild(lbl);
+    }
+  }
+  trail.appendChild(frag);
+  playState.idx = seq.length;
+  document.getElementById("dnow").innerHTML = `<em>Showing all ${seq.length} at-bats. Hover the chips below to highlight subsets.</em>`;
+  document.getElementById("dprogress").textContent = `${seq.length} / ${seq.length} (all rendered)`;
+}
+
+function formatNowCard(ab) {
+  const c = colorFor(ab.result);
+  return `<div style="display:flex;align-items:center;gap:8px;"><span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:${c}"></span><b>${ab.batter}</b> vs ${ab.opponent} <span class="pill">${ab.season_year}</span></div>
+    <div class="small" style="margin-top:4px">${ab.result || "?"} · ${ab.play_type || ""} · fielded by ${ab.defender_position || "?"}</div>
+    <div class="small">${ab.date}</div>`;
+}
+function animateAtBat(ab) {
+  if (ab.x == null || ab.y == null) return;
+  const active = document.getElementById("active-layer");
+  const trail  = document.getElementById("trail-layer");
+  const speedSec = +document.getElementById("dspeed").value;
+  const traceDur = Math.min(speedSec * 0.6, 0.6); // s
+  const fadeDur  = Math.max(speedSec * 1.2, 0.6); // s
+  const c = colorFor(ab.result);
+  const NS = "http://www.w3.org/2000/svg";
+  // Tracer line
+  const line = document.createElementNS(NS, "line");
+  line.setAttribute("x1", 160); line.setAttribute("y1", 320);
+  line.setAttribute("x2", 160); line.setAttribute("y2", 320);
+  line.setAttribute("stroke", c); line.setAttribute("stroke-width", "2"); line.setAttribute("opacity", "0.85");
+  active.appendChild(line);
+  // Tracer ball
+  const ball = document.createElementNS(NS, "circle");
+  ball.setAttribute("cx", 160); ball.setAttribute("cy", 320);
+  ball.setAttribute("r", 6); ball.setAttribute("fill", c); ball.setAttribute("opacity", "0.95");
+  active.appendChild(ball);
+  // Animate the line endpoint and the ball
+  const startTime = performance.now();
+  function frame(now) {
+    const t = Math.min(1, (now - startTime) / (traceDur * 1000));
+    const ease = 1 - Math.pow(1-t, 2);
+    const x = 160 + (ab.x - 160) * ease;
+    const y = 320 + (ab.y - 320) * ease;
+    line.setAttribute("x2", x); line.setAttribute("y2", y);
+    ball.setAttribute("cx", x); ball.setAttribute("cy", y);
+    if (t < 1) requestAnimationFrame(frame);
+    else {
+      // Drop a fading marker (carries the at-bat metadata for hover-highlights)
+      if (document.getElementById("dtrails").checked) {
+        const dot = document.createElementNS(NS, "circle");
+        dot.setAttribute("cx", ab.x); dot.setAttribute("cy", ab.y);
+        dot.setAttribute("r", 4); dot.setAttribute("fill", c); dot.setAttribute("opacity", "0.6");
+        // Searchable data attributes for hover highlight chips
+        dot.dataset.season = String(ab.season_year);
+        dot.dataset.result = ab.result || "";
+        dot.dataset.pt = ab.play_type || "";
+        dot.dataset.zone = ab.field_zone || "";
+        dot.dataset.side = ab.field_side || "";
+        dot.dataset.rs = ab.run_scoring ? "true" : "false";
+        dot.dataset.person = ab.person_key || "";
+        dot.dataset.baseOpacity = "0.18";
+        trail.appendChild(dot);
+        const dotAnim = dot.animate(
+          [{ opacity: 0.6, r: 4 }, { opacity: 0.18, r: 3 }],
+          { duration: fadeDur * 1000 }
+        );
+        dotAnim.onfinish = () => { dot.setAttribute("opacity", "0.18"); dot.setAttribute("r", "3"); };
+      }
+      // Show optional label — Month-Year in career mode (player name is constant),
+      // batter name otherwise.
+      if (document.getElementById("dlabels").checked) {
+        const mode = document.querySelector("input[name=dmode]:checked").value;
+        let lblText;
+        if (mode === "career" && ab.date) {
+          const d = new Date(ab.date + "T00:00:00");
+          lblText = d.toLocaleString("en-US", { month: "short", year: "numeric" });
+        } else {
+          lblText = ab.batter || "";
+        }
+        const lbl = document.createElementNS(NS, "text");
+        lbl.setAttribute("x", ab.x + 6); lbl.setAttribute("y", ab.y);
+        lbl.setAttribute("fill", "#e6e6e6"); lbl.setAttribute("font-size", "9");
+        lbl.dataset.season = String(ab.season_year);
+        lbl.dataset.result = ab.result || "";
+        lbl.dataset.pt = ab.play_type || "";
+        lbl.dataset.zone = ab.field_zone || "";
+        lbl.dataset.side = ab.field_side || "";
+        lbl.dataset.rs = ab.run_scoring ? "true" : "false";
+        lbl.dataset.person = ab.person_key || "";
+        lbl.textContent = lblText;
+        trail.appendChild(lbl);
+        const lblAnim = lbl.animate([{ opacity: 0.9 }, { opacity: 0.15 }], { duration: fadeDur * 1000 });
+        lblAnim.onfinish = () => lbl.setAttribute("opacity", "0.15");
+      }
+      // Remove the tracer ball + line
+      ball.animate([{ opacity: 0.95 }, { opacity: 0 }], { duration: 250, fill: "forwards" });
+      line.animate([{ opacity: 0.85 }, { opacity: 0 }], { duration: 350, fill: "forwards" });
+      setTimeout(() => { ball.remove(); line.remove(); }, 400);
+    }
+  }
+  requestAnimationFrame(frame);
+}
+</script>
+</body>
+</html>
+       trail.appendChild(lbl);
+        lbl.animate([{ opacity: 0.9 }, { opacity: 0.15 }], { duration: fadeDur * 1000, fill: "forwards" });
+      }
+      // Remove the tracer ball + line
+      ball.animate([{ opacity: 0.95 }, { opacity: 0 }], { duration: 250, fill: "forwards" });
+      line.animate([{ opacity: 0.85 }, { opacity: 0 }], { duration: 350, fill: "forwards" });
+      setTimeout(() => { ball.remove(); line.remove(); }, 400);
+    }
+  }
+  requestAnimationFrame(frame);
+}
+</script>
+</body>
+</html>
+        {text:"Grounder",   attr:"pt", val:"ground_ball"},
+        {text:"Hard GB",    attr:"pt", val:"hard_ground_ball"},
+        {text:"Pop fly",    attr:"pt", val:"pop_fly"},
+    ]},
+  ];
+  let html = "";
+  for (const g of groups) {
+    html += `<span class="hchip-group"><span class="hchip-label">${g.label}</span>`;
+    for (const c of g.chips) html += `<span class="hchip" data-attr="${c.attr}" data-val="${c.val}">${c.text}</span>`;
+    html += `</span>`;
+  }
+  root.innerHTML = html;
+  root.querySelectorAll(".hchip").forEach(chip => {
+    chip.onmouseenter = () => highlightDots(chip.dataset.attr, chip.dataset.val);
+    chip.onmouseleave = () => restoreDots();
+  });
+}
+
+function highlightDots(attr, val) {
+  const dots = document.getElementById("trail-layer").querySelectorAll("circle, text");
+  dots.forEach(d => {
+    const m = (d.dataset[attr] === val);
+    if (d.tagName === "circle") {
+      d.setAttribute("opacity", m ? 0.95 : 0.04);
+      d.setAttribute("r", m ? 5 : 2.5);
+    } else {
+      d.setAttribute("opacity", m ? 0.9 : 0.04);
+    }
+  });
+}
+function restoreDots() {
+  const dots = document.getElementById("trail-layer").querySelectorAll("circle, text");
+  dots.forEach(d => {
+    if (d.tagName === "circle") {
+      d.setAttribute("opacity", "0.18");
+      d.setAttribute("r", "3");
+    } else {
+      d.setAttribute("opacity", "0.15");
+    }
+  });
+}
+
+const _OUT_RESULTS = new Set(["batter_out","batter_out_advance_runners","infield_fly","other_out","dropped_third_strike_batter_out"]);
+
+function getSequence() {
+  const mode = document.querySelector("input[name=dmode]:checked").value;
+  let seq;
+  if (mode === "career") {
+    const pkSel = document.getElementById("dplayer").value;
+    seq = atbats.filter(ab => ab.person_key === pkSel);
+  } else if (mode === "season") {
+    const sy = +document.getElementById("dseason").value;
+    seq = atbats.filter(ab => ab.season_year === sy);
+  } else {
+    seq = atbats.slice();
+  }
+  const resOk  = new Set([...document.querySelectorAll(".fres:checked")].map(c => c.value));
+  const ptOk   = new Set([...document.querySelectorAll(".fpt:checked")].map(c => c.value));
+  const zoneOk = new Set([...document.querySelectorAll(".fzone:checked")].map(c => c.value));
+  const sideOk = new Set([...document.querySelectorAll(".fside:checked")].map(c => c.value));
+  const onlyRuns = (document.getElementById("fonlyruns") || {}).checked;
+  seq = seq.filter(ab => {
+    const r = ab.result || "";
+    const inResultFilter = resOk.has(r) || (resOk.has("outs") && _OUT_RESULTS.has(r));
+    if (!inResultFilter) return false;
+    const pt = ab.play_type || "";
+    const inPtFilter = ptOk.has(pt) || (ptOk.has("ground_ball") && pt === "hard_ground_ball") || (ptOk.has("bunt") && (pt === "bunt" || pt === "other"));
+    if (!inPtFilter) return false;
+    if (!zoneOk.has(ab.field_zone || "infield")) return false;
+    if (!sideOk.has(ab.field_side || "middle")) return false;
+    if (onlyRuns && !ab.run_scoring) return false;
+    return true;
+  });
+  seq.sort((a,b) => (a.date||"").localeCompare(b.date||"") || a.transaction_seq - b.transaction_seq);
+  return seq;
+}
+
+function applyPreset(p) {
+  const setAll = (sel, vals) => document.querySelectorAll(sel).forEach(c => c.checked = (vals === true) || (Array.isArray(vals) && vals.includes(c.value)));
+  setAll(".fres", true); setAll(".fpt", true); setAll(".fzone", true); setAll(".fside", true);
+  const onlyRunsEl = document.getElementById("fonlyruns");
+  if (onlyRunsEl) onlyRunsEl.checked = false;
+  if (p === "hits")             setAll(".fres", ["single","double","triple","home_run"]);
+  else if (p === "xbh")         setAll(".fres", ["double","triple","home_run"]);
+  else if (p === "hr")          setAll(".fres", ["home_run"]);
+  else if (p === "runs")        { if (onlyRunsEl) onlyRunsEl.checked = true; }
+  else if (p === "of_hits")     { setAll(".fres", ["single","double","triple","home_run"]); setAll(".fzone", ["outfield"]); }
+  else if (p === "if_hits")     { setAll(".fres", ["single","double","triple","home_run"]); setAll(".fzone", ["infield"]); }
+  else if (p === "outs")        setAll(".fres", ["outs"]);
+  else if (p === "line_drives") setAll(".fpt", ["line_drive"]);
+  else if (p === "ground_balls")setAll(".fpt", ["ground_ball","hard_ground_ball"]);
+  else if (p === "left")        setAll(".fside", ["left"]);
+  else if (p === "right")       setAll(".fside", ["right"]);
+  else if (p === "middle")      setAll(".fside", ["middle"]);
+}
+
+function resetPlayback() {
+  pausePlayback();
+  playState.idx = 0;
+  document.getElementById("trail-layer").innerHTML = "";
+  document.getElementById("active-layer").innerHTML = "";
+  const seq = getSequence();
+  document.getElementById("dprogress").textContent = `${seq.length} at-bats queued`;
+  if (seq.length === 0) {
+    document.getElementById("dnow").innerHTML = `<em style='color:#8a99a8'>No at-bats match the current filters.</em>`;
+    return;
+  }
+  // Default: paint all matching markers immediately so the user can hover-explore
+  // without waiting. Play button will clear and animate from the start.
+  showAll();
+  document.getElementById("dnow").innerHTML = `<em style='color:#8a99a8'>${seq.length} at-bats shown. Hover chips to highlight, or press Play to animate from start.</em>`;
+}
+function pausePlayback() {
+  playState.playing = false;
+  if (playState.timer) { clearTimeout(playState.timer); playState.timer = null; }
+}
+function playPlayback() {
+  if (playState.playing) return;
+  const seq = getSequence();
+  // If the diamond is already fully painted (from showAll/reset default), clear
+  // and start fresh so Play always animates from the beginning.
+  if (playState.idx >= seq.length) {
+    playState.idx = 0;
+    document.getElementById("trail-layer").innerHTML = "";
+    document.getElementById("active-layer").innerHTML = "";
+  }
+  playState.playing = true;
+  step();
+}
+function step() {
+  if (!playState.playing) return;
+  const seq = getSequence();
+  if (playState.idx >= seq.length) {
+    playState.playing = false;
+    document.getElementById("dnow").innerHTML = `<em>Finished. ${seq.length} at-bats played.</em>`;
+    return;
+  }
+  const ab = seq[playState.idx];
+  animateAtBat(ab);
+  document.getElementById("dnow").innerHTML = formatNowCard(ab);
+  document.getElementById("dprogress").textContent = `${playState.idx+1} / ${seq.length} (${ab.date})`;
+  playState.idx++;
+  const speedMs = (+document.getElementById("dspeed").value) * 1000;
+  playState.timer = setTimeout(step, speedMs);
+}
+function showAll() {
+  pausePlayback();
+  const seq = getSequence();
+  const trail = document.getElementById("trail-layer");
+  const NS = "http://www.w3.org/2000/svg";
+  const showDots = document.getElementById("dtrails").checked;
+  const showLabels = document.getElementById("dlabels").checked;
+  const mode = document.querySelector("input[name=dmode]:checked").value;
+  const startIdx = Math.max(0, playState.idx);
+  const frag = document.createDocumentFragment();
+  for (let i = startIdx; i < seq.length; i++) {
+    const ab = seq[i];
+    if (ab.x == null || ab.y == null) continue;
+    const c = colorFor(ab.result);
+    if (showDots) {
+      const dot = document.createElementNS(NS, "circle");
+      dot.setAttribute("cx", ab.x); dot.setAttribute("cy", ab.y);
+      dot.setAttribute("r", 3); dot.setAttribute("fill", c); dot.setAttribute("opacity", "0.18");
+      dot.dataset.season = String(ab.season_year);
+      dot.dataset.result = ab.result || "";
+      dot.dataset.pt = ab.play_type || "";
+      dot.dataset.zone = ab.field_zone || "";
+      dot.dataset.side = ab.field_side || "";
+      dot.dataset.rs = ab.run_scoring ? "true" : "false";
+      dot.dataset.person = ab.person_key || "";
+      frag.appendChild(dot);
+    }
+    if (showLabels) {
+      let lblText;
+      if (mode === "career" && ab.date) {
+        const d = new Date(ab.date + "T00:00:00");
+        lblText = d.toLocaleString("en-US", { month: "short", year: "numeric" });
+      } else {
+        lblText = ab.batter || "";
+      }
+      const lbl = document.createElementNS(NS, "text");
+      lbl.setAttribute("x", ab.x + 6); lbl.setAttribute("y", ab.y);
+      lbl.setAttribute("fill", "#e6e6e6"); lbl.setAttribute("font-size", "9");
+      lbl.setAttribute("opacity", "0.15");
+      lbl.dataset.season = String(ab.season_year);
+      lbl.dataset.result = ab.result || "";
+      lbl.dataset.pt = ab.play_type || "";
+      lbl.dataset.zone = ab.field_zone || "";
+      lbl.dataset.side = ab.field_side || "";
+      lbl.dataset.rs = ab.run_scoring ? "true" : "false";
+      lbl.textContent = lblText;
+      frag.appendChild(lbl);
+    }
+  }
+  trail.appendChild(frag);
+  playState.idx = seq.length;
+  document.getElementById("dnow").innerHTML = `<em>Showing all ${seq.length} at-bats. Hover the chips below to highlight subsets.</em>`;
+  document.getElementById("dprogress").textContent = `${seq.length} / ${seq.length} (all rendered)`;
+}
+
+function formatNowCard(ab) {
+  const c = colorFor(ab.result);
+  const rs = ab.run_scoring ? ` <span class="pill" style="background:#1a5a2c">+${ab.runs_scored} run${ab.runs_scored>1?'s':''}</span>` : "";
+  return `<div style="display:flex;align-items:center;gap:8px;"><span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:${c}"></span><b>${ab.batter}</b> vs ${ab.opponent} <span class="pill">${ab.season_year}</span>${rs}</div>
+    <div class="small" style="margin-top:4px">${ab.result || "?"} · ${ab.play_type || ""} · fielded by ${ab.defender_position || "?"}</div>
+    <div class="small">${ab.date}</div>`;
+}
+function animateAtBat(ab) {
+  if (ab.x == null || ab.y == null) return;
+  const active = document.getElementById("active-layer");
+  const trail  = document.getElementById("trail-layer");
+  const speedSec = +document.getElementById("dspeed").value;
+  const traceDur = Math.min(speedSec * 0.6, 0.6);
+  const fadeDur  = Math.max(speedSec * 1.2, 0.6);
+  const c = colorFor(ab.result);
+  const NS = "http://www.w3.org/2000/svg";
+  const line = document.createElementNS(NS, "line");
+  line.setAttribute("x1", 160); line.setAttribute("y1", 320);
+  line.setAttribute("x2", 160); line.setAttribute("y2", 320);
+  line.setAttribute("stroke", c); line.setAttribute("stroke-width", "2"); line.setAttribute("opacity", "0.85");
+  active.appendChild(line);
+  const ball = document.createElementNS(NS, "circle");
+  ball.setAttribute("cx", 160); ball.setAttribute("cy", 320);
+  ball.setAttribute("r", 6); ball.setAttribute("fill", c); ball.setAttribute("opacity", "0.95");
+  active.appendChild(ball);
+  const startTime = performance.now();
+  function frame(now) {
+    const t = Math.min(1, (now - startTime) / (traceDur * 1000));
+    const ease = 1 - Math.pow(1-t, 2);
+    const x = 160 + (ab.x - 160) * ease;
+    const y = 320 + (ab.y - 320) * ease;
+    line.setAttribute("x2", x); line.setAttribute("y2", y);
+    ball.setAttribute("cx", x); ball.setAttribute("cy", y);
+    if (t < 1) requestAnimationFrame(frame);
+    else {
+      if (document.getElementById("dtrails").checked) {
+        const dot = document.createElementNS(NS, "circle");
+        dot.setAttribute("cx", ab.x); dot.setAttribute("cy", ab.y);
+        dot.setAttribute("r", 4); dot.setAttribute("fill", c); dot.setAttribute("opacity", "0.6");
+        dot.dataset.season = String(ab.season_year);
+        dot.dataset.result = ab.result || "";
+        dot.dataset.pt = ab.play_type || "";
+        dot.dataset.zone = ab.field_zone || "";
+        dot.dataset.side = ab.field_side || "";
+        dot.dataset.rs = ab.run_scoring ? "true" : "false";
+        dot.dataset.person = ab.person_key || "";
+        trail.appendChild(dot);
+        const dotAnim = dot.animate([{ opacity: 0.6, r: 4 }, { opacity: 0.18, r: 3 }], { duration: fadeDur * 1000 });
+        dotAnim.onfinish = () => { dot.setAttribute("opacity", "0.18"); dot.setAttribute("r", "3"); };
+      }
+      if (document.getElementById("dlabels").checked) {
+        const mode = document.querySelector("input[name=dmode]:checked").value;
+        let lblText;
+        if (mode === "career" && ab.date) {
+          const d = new Date(ab.date + "T00:00:00");
+          lblText = d.toLocaleString("en-US", { month: "short", year: "numeric" });
+        } else {
+          lblText = ab.batter || "";
+        }
+        const lbl = document.createElementNS(NS, "text");
+        lbl.setAttribute("x", ab.x + 6); lbl.setAttribute("y", ab.y);
+        lbl.setAttribute("fill", "#e6e6e6"); lbl.setAttribute("font-size", "9");
+        lbl.dataset.season = String(ab.season_year);
+        lbl.dataset.result = ab.result || "";
+        lbl.dataset.pt = ab.play_type || "";
+        lbl.dataset.zone = ab.field_zone || "";
+        lbl.dataset.side = ab.field_side || "";
+        lbl.dataset.rs = ab.run_scoring ? "true" : "false";
+        lbl.textContent = lblText;
+        trail.appendChild(lbl);
+        lbl.animate([{ opacity: 0.9 }, { opacity: 0.15 }], { duration: fadeDur * 1000, fill: "forwards" });
+      }
+      ball.animate([{ opacity: 0.95 }, { opacity: 0 }], { duration: 250, fill: "forwards" });
+      line.animate([{ opacity: 0.85 }, { opacity: 0 }], { duration: 350, fill: "forwards" });
+      setTimeout(() => { ball.remove(); line.remove(); }, 400);
+    }
+  }
+  requestAnimationFrame(frame);
+}
+</script>
+</body>
+</html>
+ opacity: 0.95 }, { opacity: 0 }], { duration: 250, fill: "forwards" });
+      line.animate([{ opacity: 0.85 }, { opacity: 0 }], { duration: 350, fill: "forwards" });
+      setTimeout(() => { ball.remove(); line.remove(); }, 400);
+    }
+  }
+  requestAnimationFrame(frame);
+}
+</script>
+</body>
+</html>
+("cx", x); ball.setAttribute("cy", y);
+    if (t < 1) requestAnimationFrame(frame);
+    else {
+      if (document.getElementById("dtrails").checked) {
+        const dot = document.createElementNS(NS, "circle");
+        dot.setAttribute("cx", ab.x); dot.setAttribute("cy", ab.y);
+        dot.setAttribute("r", 4); dot.setAttribute("fill", c); dot.setAttribute("opacity", "0.6");
+        dot.dataset.season = String(ab.season_year);
+        dot.dataset.result = ab.result || "";
+        dot.dataset.pt = ab.play_type || "";
+        dot.dataset.zone = ab.field_zone || "";
+        dot.dataset.side = ab.field_side || "";
+        dot.dataset.rs = ab.run_scoring ? "true" : "false";
+        dot.dataset.person = ab.person_key || "";
+        trail.appendChild(dot);
+        const dotAnim = dot.animate([{ opacity: 0.6, r: 4 }, { opacity: 0.18, r: 3 }], { duration: fadeDur * 1000 });
+        dotAnim.onfinish = () => { dot.setAttribute("opacity", "0.18"); dot.setAttribute("r", "3"); };
+      }
+      if (document.getElementById("dlabels").checked) {
+        const mode = document.querySelector("input[name=dmode]:checked").value;
+        let lblText;
+        if (mode === "career" && ab.date) {
+          const d = new Date(ab.date + "T00:00:00");
+          lblText = d.toLocaleString("en-US", { month: "short", year: "numeric" });
+        } else {
+          lblText = ab.batter || "";
+        }
+        const lbl = document.createElementNS(NS, "text");
+        lbl.setAttribute("x", ab.x + 6); lbl.setAttribute("y", ab.y);
+        lbl.setAttribute("fill", "#e6e6e6"); lbl.setAttribute("font-size", "9");
+        lbl.dataset.season = String(ab.season_year);
+        lbl.dataset.result = ab.result || "";
+        lbl.dataset.pt = ab.play_type || "";
+        lbl.dataset.zone = ab.field_zone || "";
+        lbl.dataset.side = ab.field_side || "";
+        lbl.dataset.rs = ab.run_scoring ? "true" : "false";
+        lbl.textContent = lblText;
+        trail.appendChild(lbl);
+        const lblAnim = lbl.animate([{ opacity: 0.9 }, { opacity: 0.15 }], { duration: fadeDur * 1000 });
+        lblAnim.onfinish = () => lbl.setAttribute("opacity", "0.15");
+      }
+      ball.animate([{ opacity: 0.95 }, { opacity: 0 }], { duration: 250, fill: "forwards" });
+      line.animate([{ opacity: 0.85 }, { opacity: 0 }], { duration: 350, fill: "forwards" });
+      setTimeout(() => { ball.remove(); line.remove(); }, 400);
+    }
+  }
+  requestAnimationFrame(frame);
+}
+</script>
+</body>
+</html>
+
+      ball.animate([{ opacity: 0.95 }, { opacity: 0 }], { duration: 250, fill: "forwards" });
+      line.animate([{ opacity: 0.85 }, { opacity: 0 }], { duration: 350, fill: "forwards" });
+      setTimeout(() => { ball.remove(); line.remove(); }, 400);
+    }
+  }
+  requestAnimationFrame(frame);
+}
+</script>
+</body>
+</html>
+ove(); line.remove(); }, 400);
+    }
+  }
+  requestAnimationFrame(frame);
+}
+</script>
+</body>
+</html>
+d_side || "";
+        lbl.dataset.rs = ab.run_scoring ? "true" : "false";
+        lbl.textContent = lblText;
+        trail.appendChild(lbl);
+        const lblAnim = lbl.animate([{ opacity: 0.9 }, { opacity: 0.15 }], { duration: fadeDur * 1000 });
+        lblAnim.onfinish = () => lbl.setAttribute("opacity", "0.15");
+      }
+      ball.animate([{ opacity: 0.95 }, { opacity: 0 }], { duration: 250, fill: "forwards" });
+      line.animate([{ opacity: 0.85 }, { opacity: 0 }], { duration: 350, fill: "forwards" });
+      setTimeout(() => { ball.remove(); line.remove(); }, 400);
+    }
+  }
+  requestAnimationFrame(frame);
+}
+</script>
+</body>
+</html>
