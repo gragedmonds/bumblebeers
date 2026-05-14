@@ -23,6 +23,7 @@ interface LineupBuilderProps {
   attending: string[]; // person_keys
   prefs: Lineup; // shared can/should matrix
   games: GameLineup[]; // 0 or 2
+  opponent?: string | null;
   onChange: (next: GameLineup[]) => void;
 }
 
@@ -93,14 +94,39 @@ function suggestFill(
   return { innings };
 }
 
+interface SuggestResponse {
+  innings?: InningLineup[];
+  explanation?: string;
+  model?: string;
+  usage?: {
+    input: number;
+    output: number;
+    cache_creation: number;
+    cache_read: number;
+  };
+  error?: string;
+  detail?: string;
+  count?: number;
+  raw?: string;
+}
+
 export default function LineupBuilder({
   roster,
   attending,
   prefs,
   games,
+  opponent,
   onChange,
 }: LineupBuilderProps) {
   const [activeGame, setActiveGame] = useState(0);
+  const [smartBusy, setSmartBusy] = useState(false);
+  const [smartErr, setSmartErr] = useState<string | null>(null);
+  const [smartResult, setSmartResult] = useState<{
+    explanation: string;
+    model: string;
+    usage: SuggestResponse["usage"];
+    gameIdx: number;
+  } | null>(null);
 
   // Make sure we always have exactly 2 games to render. Re-running on every
   // render is fine — it's a couple-of-element copy.
@@ -149,6 +175,57 @@ export default function LineupBuilder({
     onChange(next);
   }, [activeGame, ensured, onChange]);
 
+  const handleSmartFill = useCallback(async () => {
+    setSmartBusy(true);
+    setSmartErr(null);
+    setSmartResult(null);
+    try {
+      const attendees = attending
+        .map((k) => ({ key: k, name: rosterByKey.get(k)?.display_name ?? k }))
+        .filter((p) => p.name);
+      const payload = {
+        attendees,
+        prefs: prefs.matrix,
+        team_notes: prefs.team_notes ?? "",
+        game_num: activeGame + 1,
+        opponent: opponent ?? undefined,
+        // Pass existing assignments so Claude doesn't overwrite locked cells.
+        existing: game.innings,
+      };
+      const r = await fetch("/api/lineup/suggest", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const json = (await r.json()) as SuggestResponse;
+      if (!r.ok || json.error) {
+        const friendly =
+          json.error === "anthropic_not_configured"
+            ? "Claude API key not set — add ANTHROPIC_API_KEY in Vercel to use Smart fill."
+            : json.error === "need_at_least_10_attendees"
+              ? `Need at least 10 attendees in the In bucket (have ${json.count}).`
+              : json.detail || json.error || `HTTP ${r.status}`;
+        throw new Error(friendly);
+      }
+      if (!json.innings || json.innings.length !== 8) {
+        throw new Error("Claude returned an unexpected shape.");
+      }
+      const next = ensureTwoGames(ensured);
+      next[activeGame] = { innings: json.innings };
+      onChange(next);
+      setSmartResult({
+        explanation: json.explanation ?? "",
+        model: json.model ?? "",
+        usage: json.usage,
+        gameIdx: activeGame,
+      });
+    } catch (e) {
+      setSmartErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSmartBusy(false);
+    }
+  }, [activeGame, attending, ensured, game.innings, onChange, opponent, prefs.matrix, prefs.team_notes, rosterByKey]);
+
   if (attending.length === 0) {
     return (
       <div className="rounded-2xl border border-amber-200 bg-white p-4 text-sm text-stone-600 shadow-sm">
@@ -190,12 +267,45 @@ export default function LineupBuilder({
         </button>
         <button
           type="button"
+          onClick={handleSmartFill}
+          disabled={smartBusy || attending.length < 10}
+          title="Claude reads the team notes and assigns 8 innings respecting your rules"
+          className="min-h-11 rounded-md bg-amber-700 px-4 py-2 font-semibold text-white hover:bg-amber-800 disabled:opacity-50"
+        >
+          {smartBusy ? "Claude thinking…" : `🐝 Smart fill (Game ${activeGame + 1})`}
+        </button>
+        <button
+          type="button"
           onClick={handleClearGame}
           className="min-h-11 rounded-md border border-stone-300 px-3 py-2 hover:bg-stone-100"
         >
           Clear Game {activeGame + 1}
         </button>
       </div>
+
+      {smartErr && (
+        <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
+          {smartErr}
+        </div>
+      )}
+      {smartResult && smartResult.gameIdx === activeGame && (
+        <div className="rounded-md border border-amber-200 bg-amber-50/70 px-3 py-2 text-sm text-stone-800">
+          <div className="font-semibold text-amber-900">Smart fill applied 🐝</div>
+          {smartResult.explanation && (
+            <p className="mt-1 whitespace-pre-wrap">{smartResult.explanation}</p>
+          )}
+          {smartResult.usage && (
+            <div className="mt-1 text-[11px] text-stone-500">
+              {smartResult.model} · {smartResult.usage.input + smartResult.usage.cache_read + smartResult.usage.cache_creation} in / {smartResult.usage.output} out
+              {smartResult.usage.cache_read > 0 && (
+                <span className="ml-1 text-emerald-700">
+                  (cache hit: {smartResult.usage.cache_read.toLocaleString()})
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="overflow-x-auto rounded-md border border-stone-200">
         <table className="min-w-full text-sm">

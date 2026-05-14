@@ -22,8 +22,10 @@ export type Mark = "none" | "can" | "should";
 export interface Lineup {
   // matrix[person_key][position] = mark. Missing keys default to "none".
   matrix: Record<string, Partial<Record<Pos, Mark>>>;
-  // Optional per-player free-text notes.
-  notes: Record<string, string>;
+  // Shared team-wide notes — free text. Read by Claude during "Smart fill"
+  // to interpret rules like "Laser sits last 2 innings" or "Greg pitches all
+  // game then Davey next game". Visible to and editable by anyone with the URL.
+  team_notes: string;
   // Manual roster overrides:
   //   archived: person_keys explicitly hidden from the active roster (even if
   //             the auto-rule would include them — e.g. regular taking the
@@ -39,11 +41,13 @@ export interface Lineup {
 
 export const EMPTY_LINEUP: Lineup = {
   matrix: {},
-  notes: {},
+  team_notes: "",
   archived: [],
   added: [],
   updated_at: "",
 };
+
+const MAX_NOTES_LEN = 4000;
 
 export const LINEUP_KEY = "bumblebeers:lineup";
 
@@ -77,7 +81,7 @@ export function isValidPos(v: unknown): v is Pos {
 export function sanitizeLineup(input: unknown): Lineup {
   const out: Lineup = {
     matrix: {},
-    notes: {},
+    team_notes: "",
     archived: [],
     added: [],
     updated_at: new Date().toISOString(),
@@ -97,13 +101,18 @@ export function sanitizeLineup(input: unknown): Lineup {
       if (Object.keys(row).length) out.matrix[pk] = row;
     }
   }
-  const notes = obj.notes;
-  if (notes && typeof notes === "object") {
-    for (const [pk, val] of Object.entries(notes as Record<string, unknown>)) {
-      if (!pk) continue;
+  // team_notes — single shared string, capped at MAX_NOTES_LEN to avoid
+  // pathological payloads. Accept legacy per-player `notes` map by
+  // concatenating its values so nothing is silently lost on migration.
+  if (typeof obj.team_notes === "string") {
+    out.team_notes = obj.team_notes.trim().slice(0, MAX_NOTES_LEN);
+  } else if (obj.notes && typeof obj.notes === "object" && !Array.isArray(obj.notes)) {
+    const legacy: string[] = [];
+    for (const [pk, val] of Object.entries(obj.notes as Record<string, unknown>)) {
       const s = String(val ?? "").trim();
-      if (s) out.notes[pk] = s;
+      if (pk && s) legacy.push(`${pk}: ${s}`);
     }
+    out.team_notes = legacy.join("\n").slice(0, MAX_NOTES_LEN);
   }
   // archived: dedupe, drop empty strings, cap to 100 entries.
   if (Array.isArray(obj.archived)) {

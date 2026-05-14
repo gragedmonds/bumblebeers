@@ -86,10 +86,11 @@ export default function NightPlanner({ date }: { date: string }) {
         if (nightJson.night) setNight(nightJson.night);
         else setNight(emptyNight(date));
         if (nightJson.error === "upstash_not_configured") setStorageOk(false);
-        if (prefsJson && (prefsJson.matrix || prefsJson.notes)) {
+        if (prefsJson) {
           setPrefs({
             matrix: prefsJson.matrix ?? {},
-            notes: prefsJson.notes ?? {},
+            team_notes:
+              typeof prefsJson.team_notes === "string" ? prefsJson.team_notes : "",
             archived: Array.isArray(prefsJson.archived) ? prefsJson.archived : [],
             added: Array.isArray(prefsJson.added) ? prefsJson.added : [],
             updated_at: prefsJson.updated_at ?? "",
@@ -229,6 +230,7 @@ export default function NightPlanner({ date }: { date: string }) {
         attending={attending}
         prefs={prefs}
         games={night.games}
+        opponent={schedule?.opponent ?? null}
         onChange={updateGames}
       />
     </div>

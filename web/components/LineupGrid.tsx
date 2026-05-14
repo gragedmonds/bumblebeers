@@ -121,7 +121,7 @@ export default function LineupGrid() {
         if (cancelled) return;
         setLineup({
           matrix: body.matrix ?? {},
-          notes: body.notes ?? {},
+          team_notes: typeof body.team_notes === "string" ? body.team_notes : "",
           archived: Array.isArray(body.archived) ? body.archived : [],
           added: Array.isArray(body.added) ? body.added : [],
           updated_at: body.updated_at ?? "",
@@ -225,15 +225,10 @@ export default function LineupGrid() {
     });
   }
 
-  function setNote(key: string, val: string) {
+  function setTeamNotes(val: string) {
     setDirty(true);
     setSaveMsg(null);
-    setLineup((prev) => {
-      const notes = { ...prev.notes };
-      if (val.trim()) notes[key] = val;
-      else delete notes[key];
-      return { ...prev, notes };
-    });
+    setLineup((prev) => ({ ...prev, team_notes: val }));
   }
 
   async function save() {
@@ -253,7 +248,7 @@ export default function LineupGrid() {
       const saved = (await res.json()) as Lineup;
       setLineup({
         matrix: saved.matrix ?? {},
-        notes: saved.notes ?? {},
+        team_notes: typeof saved.team_notes === "string" ? saved.team_notes : "",
         archived: Array.isArray(saved.archived) ? saved.archived : [],
         added: Array.isArray(saved.added) ? saved.added : [],
         updated_at: saved.updated_at ?? "",
@@ -318,6 +313,25 @@ export default function LineupGrid() {
         </div>
       )}
 
+      {/* Team-wide notes — interpreted by Claude during Smart fill */}
+      <div className="rounded-2xl border border-amber-200 bg-amber-50/40 p-3 shadow-sm">
+        <label className="mb-1 block text-sm font-semibold text-amber-900">
+          Team notes <span className="font-normal text-xs text-stone-500">(read by Claude during Smart fill)</span>
+        </label>
+        <textarea
+          value={lineup.team_notes}
+          onChange={(e) => setTeamNotes(e.target.value)}
+          placeholder={
+            "e.g. Laser sits the last 2 innings of game 1. If Greg pitches he pitches all game. Mark prefers SS but can play 2B if needed. Rotate catchers across games."
+          }
+          rows={4}
+          className="min-h-24 w-full resize-y rounded-md border border-stone-300 bg-white px-3 py-2 text-sm focus:border-amber-500 focus:outline-none"
+        />
+        <p className="mt-1 text-xs text-stone-500">
+          One shared block, persisted with the lineup. Anyone with the URL can read and edit.
+        </p>
+      </div>
+
       {/* Player rows with inline pills */}
       <ul className="space-y-1 rounded-2xl border border-amber-200 bg-white p-2 shadow-sm">
         {filtered.map((p, idx) => (
@@ -346,18 +360,11 @@ export default function LineupGrid() {
                 );
               })}
             </div>
-            <input
-              type="text"
-              value={lineup.notes[p.key] ?? ""}
-              onChange={(e) => setNote(p.key, e.target.value)}
-              placeholder="notes…"
-              className="min-h-9 w-full min-w-[8rem] flex-1 rounded-md border border-stone-200 bg-white px-2 py-1 text-sm focus:border-amber-500 focus:outline-none sm:w-auto sm:max-w-[18rem]"
-            />
             <button
               type="button"
               onClick={() => archivePlayer(p.key)}
               title={`Archive ${p.name}`}
-              className="min-h-9 rounded-md border border-stone-300 bg-white px-2 py-1 text-xs text-stone-600 hover:border-amber-400 hover:bg-amber-50 hover:text-amber-800"
+              className="ml-auto min-h-9 rounded-md border border-stone-300 bg-white px-2 py-1 text-xs text-stone-600 hover:border-amber-400 hover:bg-amber-50 hover:text-amber-800"
             >
               Archive
             </button>
