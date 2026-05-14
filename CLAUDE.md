@@ -119,7 +119,14 @@ Each at-bat in `snapshot.json` carries:
 - `runner_moves` — explicit `{name, from, to}` transitions (`from: 0` = batter; `to: 4` = scored; `to: "out"` = put out)
 - `half_inning_id` — groups consecutive at-bats in the same half-inning, used by the Diamond playback to know when to reset/seed
 
-100% coverage on the snapshots; ~54% have explicit `runner_moves` (improves in newer seasons).
+100% coverage on the snapshots; ~52% have explicit `runner_moves` (improves in newer seasons).
+
+Guarantees enforced by the motion walker in `build_data_json.py`:
+- **No duplicate runners on bases.** The same player can never appear on two bases at once in either `runners_before` or `runners_after`. `dedup_bases()` enforces this physical invariant after every state mutation, keeping the runner on the higher base (runners only advance forward).
+- **`runs_scored` per AB is recomputed from `runner_moves`** (count of `to == 4`). The legacy run-counter only saw EXPLICIT scoring `base_running` events; the motion walker also folds in heuristic advancement (a runner on 2B is auto-scored on a double if the scorer didn't explicitly tag them).
+- **`batter` is canonical from the motion walker**, not XLSX. The motion walker advances its lineup pointer for walks and strikeouts (which GameChanger never logs as transactions) as well as real ABs, so its batter identification stays in sync. The XLSX batter drifts wrong on ~33% of ABs after walks/Ks; the snapshot fixes this on emit. The motion walker also passes over slots whose player is currently on a base (real lineups skip over runners).
+
+Residual noise (~2% of motion data) shows up as ghost runners (a runner in `before` that's gone in `after` with no `runner_moves` entry) and from/to-state mismatches. These trace to scorer undo/override/redundant `end_half` events that corrupt the play-by-play stream itself, beyond what the walker can reconstruct. `audit_motion.py` keeps a running count.
 
 ---
 
