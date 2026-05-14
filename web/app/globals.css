@@ -23,14 +23,40 @@ body {
   background: var(--background);
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
+  position: relative;
+  isolation: isolate;
 }
 
-/* Honeycomb "dots": disconnected tiny hexagons on a tight grid. Reads as
- * a subtle bee-themed dot pattern rather than a continuous honeycomb. Pointy-
- * top hex, radius ~3.5px, amber-700 fill at ~13% opacity, 22px tile so the
- * dots are clearly separated. */
-.bg-honeycomb {
+/* Honeycomb "dots": small isolated hexagons that fade from a strong centre
+ * out to transparent at the edges. Mimics Claude Code's welcome-screen dot
+ * pattern (vignette fade) but with hex tiles instead of circles. Pointy-top
+ * hex, radius ~3.5px, amber-700 fill at 40% opacity; the radial mask is what
+ * keeps the pattern from feeling like wallpaper. Lives on body::before so
+ * the mask doesn't apply to the page content above it. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
   background-image:
-    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='22' height='22' viewBox='0 0 22 22'><polygon points='11,7.5 14.03,9.25 14.03,12.75 11,14.5 7.97,12.75 7.97,9.25' fill='%23b45309' fill-opacity='0.13'/></svg>");
+    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='22' height='22' viewBox='0 0 22 22'><polygon points='11,7.5 14.03,9.25 14.03,12.75 11,14.5 7.97,12.75 7.97,9.25' fill='%23b45309' fill-opacity='0.40'/></svg>");
   background-repeat: repeat;
+  -webkit-mask-image: radial-gradient(
+    ellipse 65% 55% at 50% 38%,
+    rgba(0, 0, 0, 1) 0%,
+    rgba(0, 0, 0, 0.85) 35%,
+    rgba(0, 0, 0, 0) 100%
+  );
+  mask-image: radial-gradient(
+    ellipse 65% 55% at 50% 38%,
+    rgba(0, 0, 0, 1) 0%,
+    rgba(0, 0, 0, 0.85) 35%,
+    rgba(0, 0, 0, 0) 100%
+  );
+}
+
+/* Legacy class kept as a no-op so any inline style="background-image: ..."
+ * applied via layout.tsx falls back to the pseudo-element pattern. */
+.bg-honeycomb {
 }
