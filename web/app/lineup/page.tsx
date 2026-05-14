@@ -1,5 +1,6 @@
 import LineupGrid from "@/components/LineupGrid";
 import RosterIntake from "@/components/RosterIntake";
+import UpcomingGames from "@/components/UpcomingGames";
 
 export default function LineupPage() {
   return (
@@ -9,6 +10,7 @@ export default function LineupPage() {
         Mark each player as <em>can play</em> or <em>should play</em> for every defensive position.
         Shared with the whole team — last save wins.
       </p>
+      <UpcomingGames />
       <RosterIntake />
       <LineupGrid />
     </section>
