@@ -4,6 +4,7 @@
 // game nights. Phase 4d will turn the "Plan tonight's lineup" buttons into
 // real edit links.
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import type { NightSchedule } from "@/lib/schedule";
 
@@ -107,41 +108,44 @@ export default function UpcomingGames({ limit = 3 }: { limit?: number }) {
         {upcoming.map((n) => {
           const rel = relative(n.date);
           return (
-            <li
-              key={n.date}
-              className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-100 bg-amber-50/40 p-3"
-            >
-              <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-                <span className="font-bold text-stone-900">
-                  {n.day} · {fmtDate(n.date)}
-                </span>
-                {rel && (
-                  <span className="rounded-full bg-amber-700 px-2 py-0.5 text-xs font-semibold text-white">
-                    {rel}
+            <li key={n.date}>
+              <Link
+                href={`/lineup/${n.date}`}
+                className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-100 bg-amber-50/40 p-3 transition hover:border-amber-300 hover:bg-amber-50"
+              >
+                <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                  <span className="font-bold text-stone-900">
+                    {n.day} · {fmtDate(n.date)}
                   </span>
-                )}
-                <span className="text-stone-700">
-                  vs <span className="font-semibold">{n.opponent}</span>
-                </span>
-                <span className="text-xs text-stone-500">@ {n.location}</span>
-              </div>
-              <div className="flex flex-wrap gap-2 text-xs">
-                {n.games.map((g, i) => (
-                  <span
-                    key={i}
-                    className={`rounded-md border px-2 py-1 ${
-                      g.homeAway === "home"
-                        ? "border-emerald-300 bg-emerald-50 text-emerald-800"
-                        : "border-stone-300 bg-white text-stone-700"
-                    }`}
-                  >
-                    {g.time}
-                    <span className="ml-1 text-[10px] uppercase">
-                      {g.homeAway === "home" ? "home" : "away"}
+                  {rel && (
+                    <span className="rounded-full bg-amber-700 px-2 py-0.5 text-xs font-semibold text-white">
+                      {rel}
                     </span>
+                  )}
+                  <span className="text-stone-700">
+                    vs <span className="font-semibold">{n.opponent}</span>
                   </span>
-                ))}
-              </div>
+                  <span className="text-xs text-stone-500">@ {n.location}</span>
+                </div>
+                <div className="flex flex-wrap items-center gap-2 text-xs">
+                  {n.games.map((g, i) => (
+                    <span
+                      key={i}
+                      className={`rounded-md border px-2 py-1 ${
+                        g.homeAway === "home"
+                          ? "border-emerald-300 bg-emerald-50 text-emerald-800"
+                          : "border-stone-300 bg-white text-stone-700"
+                      }`}
+                    >
+                      {g.time}
+                      <span className="ml-1 text-[10px] uppercase">
+                        {g.homeAway === "home" ? "home" : "away"}
+                      </span>
+                    </span>
+                  ))}
+                  <span className="text-amber-800">Plan →</span>
+                </div>
+              </Link>
             </li>
           );
         })}

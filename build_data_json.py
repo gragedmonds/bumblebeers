@@ -100,24 +100,26 @@ def _walk_lineup_subs(event_data: dict):
 
 
 def _compute_runners_before(raw, player_id_map):
-    """Walk the play stream and produce, for each transaction, the names of any
-    runners standing on 1B / 2B / 3B just before that transaction fires.
+    """Walk the play stream and, for each transaction, return:
 
-    Returns: dict keyed by (event_id, transaction_sequence_number) →
-             {"1": name|None, "2": name|None, "3": name|None}
+        {
+          "before": {"1": name|None, "2": ..., "3": ...},
+          "after":  {"1": name|None, "2": ..., "3": ...},
+          "moves":  [{"name": str, "from": 0|1|2|3, "to": 1|2|3|4|"out"}, ...],
+          "half_inning_id": "<eid>:<seq#>",
+        }
 
-    Approach: scan every game's plays in `sequence_number` order; maintain a
-    `bases` dict {1: runner_id|None, 2: …, 3: …} that resets on `end_half`.
-    For each `transaction` we snapshot bases (that is the BEFORE state), then
-    apply both the explicit follow-up `base_running` events and a play-result
-    heuristic so the next transaction sees a roughly-correct AFTER state.
+    `before` / `after` snapshot occupancy. `moves` are the explicit runner
+    transitions caused by THIS at-bat — including the batter's own move
+    (from = 0 = batter's box). `half_inning_id` increments on every
+    `end_half` so the viewer can detect inning changes and clear the bases.
 
-    Coverage: known to be imperfect for older seasons where scorers were terse
-    (CLAUDE.md "play-by-play is incomplete for historical seasons"). For the
-    visual it's plenty — and we never invent runners, only place ones the
-    play stream already named.
+    Result keyed by (event_id, transaction_sequence_number). Known to be
+    imperfect for older seasons where scorers were terse (CLAUDE.md
+    "play-by-play is incomplete for historical seasons"). We never invent
+    runners — only place ones the play stream already named.
     """
-    out: dict[tuple[str, int], dict[str, str | None]] = {}
+    out: dict[tuple[str, int], dict] = {}
 
     for t in raw.get("teams", []):
         for g in t.get("games") or []:
@@ -142,17 +144,25 @@ def _compute_runners_before(raw, player_id_map):
             last_tx_batter: str | None = None
             # Buffer base_running events for the current transaction.
             pending_brs: list[dict] = []
+            # Half-inning counter — bumped on every end_half. The viewer uses
+            # the resulting id to decide when to clear runners between innings.
+            half_inning_seq = 0
 
             def flush_pending():
-                """Apply pending base_running events + play-result heuristic to bases."""
+                """Apply pending base_running events + play-result heuristic to bases.
+                Also computes the `moves` and `after` snapshot for the most-recent
+                transaction (last_tx_seq) and stitches them back into `out`."""
                 nonlocal bases
                 if last_tx_seq is None:
                     pending_brs.clear()
                     return
                 explicit_runners: set[str] = set()
-                # 1) Process explicit base_running events from the play stream.
-                # Each one explicitly moves a named runner to a new base (or out).
+                # Track each runner's destination this play. Keyed by runner_id.
+                # Values: 1|2|3 (new base), 4 (scored), "out".
+                runner_dest: dict[str, int | str] = {}
                 next_bases: dict[int, str | None] = {1: None, 2: None, 3: None}
+                # 1) Process explicit base_running events from the play stream.
+                # Each one explicitly moves a named runner to a new base / scored / out.
                 for ev in pending_brs:
                     rid = ev.get("runnerId")
                     base = ev.get("base")
@@ -161,10 +171,14 @@ def _compute_runners_before(raw, player_id_map):
                         continue
                     explicit_runners.add(rid)
                     if "out" in pt:
-                        continue  # runner is out; doesn't end up on a base
+                        runner_dest[rid] = "out"
+                        continue
+                    if base == 4:
+                        runner_dest[rid] = 4
+                        continue
                     if base in (1, 2, 3) and next_bases[base] is None:
                         next_bases[base] = rid
-                    # base == 4 → scored; runner leaves the basepaths
+                        runner_dest[rid] = base
                 # 2) Untagged runners advance by the play-result default.
                 advance_n = _RUNNER_ADVANCE_FOR.get(last_tx_result or "", 0)
                 for b in (1, 2, 3):
@@ -174,12 +188,48 @@ def _compute_runners_before(raw, player_id_map):
                     new_b = b + advance_n
                     if 1 <= new_b <= 3 and next_bases[new_b] is None:
                         next_bases[new_b] = rid
-                    # new_b == 4 → scored; new_b == 0/<0 impossible
+                        if new_b != b:
+                            runner_dest[rid] = new_b
+                    elif new_b >= 4:
+                        runner_dest[rid] = 4
                 # 3) Place the batter from the prior transaction.
                 if last_tx_batter and last_tx_result:
                     target = _BATTER_LANDS_AT.get(last_tx_result)
                     if target in (1, 2, 3) and next_bases[target] is None:
                         next_bases[target] = last_tx_batter
+                        runner_dest[last_tx_batter] = target
+                    elif target == 4:  # home run
+                        runner_dest[last_tx_batter] = 4
+                    # If the batter is out (no entry in _BATTER_LANDS_AT), we don't
+                    # claim them — the result string carries that information.
+
+                # Build the structured moves[] list. For each runner_dest entry,
+                # figure out their `from` base (look them up in `bases`, else 0
+                # if they're the batter who just stepped in).
+                moves: list[dict] = []
+                for rid, dest in runner_dest.items():
+                    from_b: int = 0
+                    for b in (1, 2, 3):
+                        if bases.get(b) == rid:
+                            from_b = b
+                            break
+                    moves.append({
+                        "name": player_id_map.get(rid, "Unknown"),
+                        "from": from_b,
+                        "to": dest,
+                    })
+
+                # Stitch moves + after-snapshot back into the result for
+                # the transaction we just finished resolving.
+                prior = out.get((eid, last_tx_seq))
+                if prior is not None:
+                    prior["moves"] = moves
+                    prior["after"] = {
+                        "1": player_id_map.get(next_bases[1]) if next_bases[1] else None,
+                        "2": player_id_map.get(next_bases[2]) if next_bases[2] else None,
+                        "3": player_id_map.get(next_bases[3]) if next_bases[3] else None,
+                    }
+
                 bases = next_bases
                 pending_brs.clear()
 
@@ -225,9 +275,18 @@ def _compute_runners_before(raw, player_id_map):
                         # REAL at-bat. Finalize any prior runner motion, then snapshot.
                         flush_pending()
                         out[(eid, seq)] = {
-                            "1": player_id_map.get(bases[1]) if bases[1] else None,
-                            "2": player_id_map.get(bases[2]) if bases[2] else None,
-                            "3": player_id_map.get(bases[3]) if bases[3] else None,
+                            "before": {
+                                "1": player_id_map.get(bases[1]) if bases[1] else None,
+                                "2": player_id_map.get(bases[2]) if bases[2] else None,
+                                "3": player_id_map.get(bases[3]) if bases[3] else None,
+                            },
+                            # `moves` and `after` get filled in by the next
+                            # flush_pending() call (at the next transaction or
+                            # end_half). Initialize them so consumers can rely
+                            # on the shape even if scoring data is missing.
+                            "moves": [],
+                            "after": {"1": None, "2": None, "3": None},
+                            "half_inning_id": f"{eid}:{half_inning_seq}",
                         }
                         # Identify the batter via the offense team's lineup pointer.
                         batter_id = None
@@ -261,6 +320,7 @@ def _compute_runners_before(raw, player_id_map):
                     last_tx_seq = None
                     last_tx_result = None
                     last_tx_batter = None
+                    half_inning_seq += 1
             # End of game: flush any trailing pending events (defensive).
             flush_pending()
     return out
@@ -285,26 +345,44 @@ def main():
     career_weighted = {pk(c["display_name"]): c for c in bundle["career_weighted"]}
     at_bats = build_at_bats()
 
-    # Phase 3 enrichment: attach `runners_before` per at-bat by walking the raw play stream.
+    # Phase 3 / 3.5 enrichment: walk the raw play stream once to compute
+    # per-transaction base state (before + after), the explicit runner moves
+    # that happened during the at-bat, and a half-inning id the viewer uses
+    # to decide when to clear runners between innings.
     if os.path.exists(RAW_JSON):
         with open(RAW_JSON, "r", encoding="utf-8") as f:
             raw = json.load(f)
         player_id_map = _build_player_id_map(raw)
-        runners_before = _compute_runners_before(raw, player_id_map)
-        hits = 0
+        motion = _compute_runners_before(raw, player_id_map)
+        with_runners = 0
+        with_moves = 0
         for ab in at_bats:
             key = (ab.get("event_id"), ab.get("transaction_seq"))
-            rb = runners_before.get(key)
-            if rb is None:
+            m = motion.get(key)
+            if m is None:
                 ab["runners_before"] = {"1": None, "2": None, "3": None}
+                ab["runners_after"] = {"1": None, "2": None, "3": None}
+                ab["runner_moves"] = []
+                ab["half_inning_id"] = None
             else:
-                ab["runners_before"] = rb
-                if any(rb.values()):
-                    hits += 1
-        print(f"runners_before: matched {hits}/{len(at_bats)} at-bats with at least one runner on")
+                ab["runners_before"] = m["before"]
+                ab["runners_after"] = m.get("after", {"1": None, "2": None, "3": None})
+                ab["runner_moves"] = m.get("moves", [])
+                ab["half_inning_id"] = m.get("half_inning_id")
+                if any(m["before"].values()):
+                    with_runners += 1
+                if ab["runner_moves"]:
+                    with_moves += 1
+        print(
+            f"motion: {with_runners}/{len(at_bats)} at-bats with runners on, "
+            f"{with_moves} with explicit runner moves"
+        )
     else:
         for ab in at_bats:
             ab["runners_before"] = {"1": None, "2": None, "3": None}
+            ab["runners_after"] = {"1": None, "2": None, "3": None}
+            ab["runner_moves"] = []
+            ab["half_inning_id"] = None
 
     mvp_nights = build_mvp_nights(at_bats)
 

@@ -19,10 +19,23 @@ export type AtBatResult =
 export type FieldZone = "infield" | "outfield" | "other";
 export type FieldSide = "left" | "middle" | "right" | "other";
 
-export interface RunnersBefore {
+export interface BaseSnapshot {
   "1": string | null;
   "2": string | null;
   "3": string | null;
+}
+// Kept as an alias so older imports still work.
+export type RunnersBefore = BaseSnapshot;
+
+/**
+ * One runner's transition during a single at-bat.
+ *   from = 0 means the batter (just stepped in); 1/2/3 = previously on that base.
+ *   to   = 1/2/3 means new base; 4 = scored / crossed home; "out" = put out.
+ */
+export interface RunnerMove {
+  name: string;
+  from: 0 | 1 | 2 | 3;
+  to: 1 | 2 | 3 | 4 | "out";
 }
 
 export interface AtBat {
@@ -42,7 +55,11 @@ export interface AtBat {
   y: number | null;
   transaction_seq: number;
   event_id: string | null;
-  runners_before: RunnersBefore;
+  runners_before: BaseSnapshot;
+  // Phase 3.5 additions — present on every at-bat in newly built snapshots.
+  runners_after: BaseSnapshot;
+  runner_moves: RunnerMove[];
+  half_inning_id: string | null;
 }
 
 export interface PlayerSeason {
