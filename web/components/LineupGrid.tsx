@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useSnapshot } from "@/lib/useSnapshot";
 import {
   EMPTY_LINEUP,
@@ -231,36 +231,46 @@ export default function LineupGrid() {
     setLineup((prev) => ({ ...prev, team_notes: val }));
   }
 
-  async function save() {
-    setSaving(true);
-    setSaveMsg(null);
-    setServerError(null);
-    try {
-      const res = await fetch("/api/lineup", {
-        method: "PUT",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(lineup),
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({ error: res.statusText }));
-        throw new Error(body.error || `HTTP ${res.status}`);
+  // Auto-save: debounce 700ms after any change. Uses a ref to the latest
+  // lineup so we never save stale state.
+  const latestLineupRef = useRef(lineup);
+  useEffect(() => {
+    latestLineupRef.current = lineup;
+  }, [lineup]);
+
+  useEffect(() => {
+    if (!loaded || !dirty) return;
+    const timer = setTimeout(async () => {
+      setSaving(true);
+      setServerError(null);
+      try {
+        const res = await fetch("/api/lineup", {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(latestLineupRef.current),
+        });
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({ error: res.statusText }));
+          throw new Error(body.error || `HTTP ${res.status}`);
+        }
+        const saved = (await res.json()) as Lineup;
+        // Don't blat user edits made between PUT firing and the response —
+        // only update the timestamp, leave the matrix/notes/archived/added
+        // alone since they may already be ahead of what came back.
+        setLineup((prev) => ({
+          ...prev,
+          updated_at: saved.updated_at ?? prev.updated_at,
+        }));
+        setDirty(false);
+        setSaveMsg("Saved.");
+      } catch (e) {
+        setServerError("Auto-save failed: " + (e instanceof Error ? e.message : String(e)));
+      } finally {
+        setSaving(false);
       }
-      const saved = (await res.json()) as Lineup;
-      setLineup({
-        matrix: saved.matrix ?? {},
-        team_notes: typeof saved.team_notes === "string" ? saved.team_notes : "",
-        archived: Array.isArray(saved.archived) ? saved.archived : [],
-        added: Array.isArray(saved.added) ? saved.added : [],
-        updated_at: saved.updated_at ?? "",
-      });
-      setDirty(false);
-      setSaveMsg("Saved.");
-    } catch (e) {
-      setServerError("Save failed: " + (e instanceof Error ? e.message : String(e)));
-    } finally {
-      setSaving(false);
-    }
-  }
+    }, 700);
+    return () => clearTimeout(timer);
+  }, [lineup, dirty, loaded]);
 
   if (snapErr) {
     return <p className="text-red-700">Failed to load roster: {snapErr.message}</p>;
@@ -290,16 +300,12 @@ export default function LineupGrid() {
         </label>
         <Legend />
         <span className="text-xs text-stone-500">
-          Last saved: {formatTimestamp(lineup.updated_at)}
+          {saving
+            ? "Saving…"
+            : dirty
+              ? "Unsaved (auto-saves in a moment)"
+              : `Saved · ${formatTimestamp(lineup.updated_at)}`}
         </span>
-        <button
-          type="button"
-          onClick={save}
-          disabled={!dirty || saving}
-          className="min-h-11 rounded-md bg-amber-700 px-4 py-2 text-sm font-semibold text-white hover:bg-amber-800 disabled:opacity-50"
-        >
-          {saving ? "Saving…" : dirty ? "Save changes" : "Saved"}
-        </button>
       </div>
 
       {serverError && (

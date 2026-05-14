@@ -5,7 +5,7 @@
 // and LineupBuilder, handles save.
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import AttendanceEditor from "./AttendanceEditor";
 import LineupBuilder from "./LineupBuilder";
 import { useSnapshot } from "@/lib/useSnapshot";
@@ -131,33 +131,55 @@ export default function NightPlanner({ date }: { date: string }) {
     setNight((prev) => ({ ...prev, games }));
   }, []);
 
-  const save = useCallback(async () => {
-    setSaving(true);
-    setErr(null);
-    setSavedMsg(null);
-    try {
-      const r = await fetch(`/api/night/${encodeURIComponent(date)}`, {
-        method: "PUT",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(night),
-      });
-      const json = (await r.json()) as { night?: PersistedNight; error?: string; detail?: string };
-      if (!r.ok) {
-        const friendly =
-          json.error === "upstash_not_configured"
-            ? "Storage isn't configured yet — add the Upstash Redis integration in Vercel."
-            : json.detail || json.error || `HTTP ${r.status}`;
-        throw new Error(friendly);
+  // Auto-save: debounce 700ms after any change to night state. Ref-pattern
+  // so the PUT always serialises the latest state, even if the user keeps
+  // editing while the previous save is in flight.
+  const latestNightRef = useRef(night);
+  useEffect(() => {
+    latestNightRef.current = night;
+  }, [night]);
+
+  useEffect(() => {
+    if (!loaded || !dirty) return;
+    const timer = setTimeout(async () => {
+      setSaving(true);
+      setErr(null);
+      try {
+        const r = await fetch(`/api/night/${encodeURIComponent(date)}`, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(latestNightRef.current),
+        });
+        const json = (await r.json()) as {
+          night?: PersistedNight;
+          error?: string;
+          detail?: string;
+        };
+        if (!r.ok) {
+          const friendly =
+            json.error === "upstash_not_configured"
+              ? "Storage isn't configured yet — add the Upstash Redis integration in Vercel."
+              : json.detail || json.error || `HTTP ${r.status}`;
+          throw new Error(friendly);
+        }
+        if (json.night) {
+          // Bump only the updated_at — leave the rest of the local state
+          // alone in case the user kept editing during the round-trip.
+          setNight((prev) => ({
+            ...prev,
+            updated_at: json.night?.updated_at ?? prev.updated_at,
+          }));
+        }
+        setDirty(false);
+        setSavedMsg("Saved.");
+      } catch (e) {
+        setErr((e as Error).message);
+      } finally {
+        setSaving(false);
       }
-      if (json.night) setNight(json.night);
-      setDirty(false);
-      setSavedMsg("Saved.");
-    } catch (e) {
-      setErr((e as Error).message);
-    } finally {
-      setSaving(false);
-    }
-  }, [date, night]);
+    }, 700);
+    return () => clearTimeout(timer);
+  }, [night, dirty, loaded, date]);
 
   if (!loaded) {
     return <p className="text-stone-500">Loading…</p>;
@@ -183,21 +205,20 @@ export default function NightPlanner({ date }: { date: string }) {
             </p>
           )}
         </div>
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-center gap-3">
           <Link
             href="/lineup"
             className="min-h-11 rounded-md border border-stone-300 px-3 py-2 text-sm hover:bg-stone-100"
           >
             ← All nights
           </Link>
-          <button
-            type="button"
-            onClick={save}
-            disabled={!dirty || saving}
-            className="min-h-11 rounded-md bg-amber-700 px-5 py-2 text-sm font-semibold text-white hover:bg-amber-800 disabled:opacity-50"
-          >
-            {saving ? "Saving…" : dirty ? "Save night" : "Saved"}
-          </button>
+          <span className="text-xs text-stone-500">
+            {saving
+              ? "Saving…"
+              : dirty
+                ? "Unsaved (auto-saves in a moment)"
+                : "All changes saved"}
+          </span>
         </div>
       </div>
 
