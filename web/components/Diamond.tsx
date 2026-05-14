@@ -38,7 +38,7 @@ interface RunnerSquare {
   label: SVGTextElement;
 }
 
-const RUNNER_SQUARE_SIZE = 14;
+const RUNNER_SQUARE_SIZE = 18;
 const RUNNER_HALF = RUNNER_SQUARE_SIZE / 2;
 
 function runnerKey(name: string): string {
@@ -609,16 +609,24 @@ export default function Diamond() {
       const c = colorFor(ab.result || undefined);
 
       // ── PERSISTENT BASE STATE ────────────────────────────────────────────
-      // If this at-bat is in a new half-inning, fade out any leftover runners
-      // and re-seed from the BEFORE snapshot. Same inning: trust internal state
-      // and let runner_moves animate the transitions.
+      // If this at-bat is in a new half-inning, clear any leftover runners
+      // synchronously and re-seed from the BEFORE snapshot in the same tick.
+      // (Using a fade-then-seed handoff caused a visible flicker on fast
+      // browsers when playback speed was high — by the time the seed
+      // landed, the next at-bat had already started another transition.)
+      // Same inning: trust internal state and let runner_moves animate.
       const inningId = ab.half_inning_id ?? null;
       const inningChanged = inningId !== lastHalfInningRef.current;
       if (inningChanged) {
-        // Fire-and-forget fade; we don't await it before painting the ball.
-        void clearAllRunners(runnersRef.current, 220).then(() => {
-          if (ab.runners_before) seedRunnersFromSnapshot(baseLayer, runnersRef.current, ab.runners_before);
-        });
+        // Synchronous teardown of any leftover squares.
+        for (const r of runnersRef.current.values()) {
+          r.rect.remove();
+          r.label.remove();
+        }
+        runnersRef.current.clear();
+        if (ab.runners_before) {
+          seedRunnersFromSnapshot(baseLayer, runnersRef.current, ab.runners_before);
+        }
         lastHalfInningRef.current = inningId;
       }
 
@@ -671,7 +679,9 @@ export default function Diamond() {
         // animating moves; for same-inning we kick off immediately.
         const moves = (ab.runner_moves ?? []) as RunnerMove[];
         const moveMs = moveDur * 1000;
-        const kickoff = inningChanged ? 260 : 0;
+        // Was 260ms previously to wait for the async fade — now that the
+        // inning-change teardown is synchronous we can fire immediately.
+        const kickoff = 0;
         setTimeout(() => {
           for (const mv of moves) {
             const key = runnerKey(mv.name);

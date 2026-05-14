@@ -6,15 +6,16 @@
 
 import "server-only";
 import { loadSnapshot } from "./data-server";
-import type { Snapshot, MvpLine, MvpNight } from "./data";
+import type { AtBat, Snapshot, MvpLine, MvpNight } from "./data";
 
 const INSTRUCTIONS = `You are "Beeves" — the butler-analyst for the Bumblebeers, an adult slo-pitch softball team in Whitby, Ontario. You answer questions about the team's stats using the data block below.
 
 Hard rules:
 - ALWAYS use the actual numbers in the data block. Cite them in every answer that's about a player or stat. Never invent or estimate values you don't see in the data.
-- Treat the season-stats numbers as authoritative for HR / RBI totals (GameChanger's play-by-play undercounts HRs in older seasons).
+- Treat the season-stats numbers as authoritative for HR / RBI totals (GameChanger's play-by-play undercounts HRs in older seasons; the AT_BATS log is play-by-play and will undercount HRs in older seasons. For HR totals lean on the SEASON_STATS in the players block).
 - The MVP-night data is derived from play-by-play only — accurate for 2024+, best-effort for older.
-- If the question needs data we don't have (per-pitch breakdowns, opposing-team stats, etc.), say so in one sentence and stop. Don't guess.
+- For per-at-bat / per-day / per-opponent / per-play-type / RISP questions, use the AT_BATS TSV at the bottom of the data block. It has every plate appearance the team ever recorded (~5,240 rows, 2018–2025). Filter, group, and count from there yourself — you don't need a tool call.
+- The only things you genuinely DON'T have: per-pitch breakdowns, opposing-team box scores, and weather. If a question needs those, say so in one sentence and stop. Don't guess.
 
 Output formatting (this matters — readers are tapping this on a phone):
 - For ANY ranking / leaderboard / top-N question, return a markdown table. Columns should be the names + the stat(s) being compared, rounded sensibly (BMBL+ to 1 decimal, wOBA to 3 decimals, percentages with a %). Limit tables to ≤10 rows unless asked otherwise; if there are more, show the top and note the count.
@@ -69,10 +70,51 @@ function compactLine(p: MvpLine): Record<string, unknown> {
   };
 }
 
+// Compact every at-bat into one pipe-delimited row. Token-efficient for
+// the data block — TSV reads cheaper than JSON when there are thousands of
+// near-identical records. Includes everything needed for typical per-AB
+// questions (day-of-week breakdowns, opponent splits, RISP, play-type
+// patterns). Excludes coordinates (x/y) and explicit runner_moves to keep
+// the block under control — those live in snapshot.json for the spray
+// chart but aren't useful for natural-language Q&A.
+function compactAtBats(at_bats: AtBat[]): string {
+  const header =
+    "AT_BATS TSV — every plate appearance 2018–2025. Columns (pipe-delimited):\n" +
+    "date|person_key|result|play_type|runs_scored|opponent|season|zone|side|risp\n" +
+    "  date         YYYY-MM-DD (America/Toronto local)\n" +
+    "  person_key   canonical key (also used in players block)\n" +
+    "  result       single|double|triple|home_run|strike_out|batter_out|batter_out_advance_runners|infield_fly|other_out|dropped_third_strike_batter_out|sacrifice_fly|fielders_choice|error\n" +
+    "  play_type    line_drive|fly_ball|ground_ball|hard_ground_ball|pop_fly|bunt|other  (may be blank)\n" +
+    "  runs_scored  RBIs credited to this AB (incl. the batter if HR)\n" +
+    "  zone         infield|outfield|other\n" +
+    "  side         left|middle|right|other\n" +
+    "  risp         1 if any runner was on 2B or 3B before the pitch, else 0\n";
+  const rows: string[] = [];
+  for (const ab of at_bats) {
+    const rb = ab.runners_before;
+    const risp = rb && (rb["2"] || rb["3"]) ? 1 : 0;
+    rows.push(
+      [
+        ab.date ?? "",
+        ab.person_key ?? "",
+        ab.result ?? "",
+        ab.play_type ?? "",
+        ab.runs_scored ?? 0,
+        ab.opponent ?? "",
+        ab.season_year ?? "",
+        ab.field_zone ?? "",
+        ab.field_side ?? "",
+        risp,
+      ].join("|"),
+    );
+  }
+  return header + rows.join("\n");
+}
+
 let cachedPayload: string | null = null;
 let cachedGeneratedAt: string | null = null;
 
-/** Return a stable JSON payload (sorted keys, deterministic) for the cache. */
+/** Return a stable text payload (deterministic) for the cache. */
 export async function buildAskDataBlock(): Promise<{
   text: string;
   generated_at: string;
@@ -82,8 +124,14 @@ export async function buildAskDataBlock(): Promise<{
   if (cachedPayload && cachedGeneratedAt === snap.generated_at) {
     return { text: cachedPayload, generated_at: cachedGeneratedAt };
   }
-  const payload = compactSnapshot(snap);
-  cachedPayload = "BUMBLEBEERS STATS DATA (compact JSON)\n\n" + JSON.stringify(payload);
+  const summaryJson = JSON.stringify(compactSnapshot(snap));
+  const atBatsTsv = compactAtBats(snap.at_bats);
+  cachedPayload =
+    "BUMBLEBEERS STATS DATA\n\n" +
+    "==== SUMMARY (compact JSON: players + seasons + career rollups + MVP nights) ====\n" +
+    summaryJson +
+    "\n\n==== AT_BATS LOG ====\n" +
+    atBatsTsv;
   cachedGeneratedAt = snap.generated_at;
   return { text: cachedPayload, generated_at: snap.generated_at };
 }
