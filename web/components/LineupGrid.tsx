@@ -16,16 +16,32 @@ const MARK_CYCLE: Record<Mark, Mark> = {
   should: "none",
 };
 
-function markStyle(m: Mark): string {
-  if (m === "should") return "bg-emerald-600 text-white";
-  if (m === "can") return "bg-amber-200 text-amber-900";
-  return "bg-white text-stone-300 hover:bg-stone-50";
-}
+// Compact pill labels — preserve the canonical position values (LCF/RCF/1B/...)
+// in storage, but show shorter labels on the pills so they fit inline.
+const PILL_LABEL: Record<Pos, string> = {
+  "1B": "1",
+  "2B": "2",
+  "3B": "3",
+  SS: "SS",
+  P: "P",
+  C: "C",
+  LF: "LF",
+  LCF: "LC",
+  RCF: "RC",
+  RF: "RF",
+};
+// Display order mirrors a typical lineup card: infield first, then outfield.
+const PILL_ORDER: Pos[] = ["1B", "2B", "3B", "SS", "P", "C", "LF", "LCF", "RCF", "RF"];
 
-function markLabel(m: Mark): string {
-  if (m === "should") return "★";
-  if (m === "can") return "✓";
-  return "·";
+function pillClass(m: Mark): string {
+  // Three colour states: grey (none) → amber (can) → green (should)
+  if (m === "should") {
+    return "bg-emerald-500 text-white border-emerald-600 shadow-sm";
+  }
+  if (m === "can") {
+    return "bg-amber-300 text-amber-950 border-amber-400";
+  }
+  return "bg-stone-100 text-stone-500 border-stone-200 hover:bg-stone-200";
 }
 
 function formatTimestamp(iso: string): string {
@@ -46,6 +62,7 @@ export default function LineupGrid() {
   const [saving, setSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState<string | null>(null);
   const [serverError, setServerError] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
 
   // Players from snapshot, ordered by career BMBL+ desc (active hitters first).
   const players = useMemo(() => {
@@ -61,26 +78,29 @@ export default function LineupGrid() {
     }));
   }, [snapshot]);
 
+  const filtered = useMemo(() => {
+    if (!search.trim()) return players;
+    const q = search.toLowerCase();
+    return players.filter((p) => p.name.toLowerCase().includes(q));
+  }, [players, search]);
+
   // Initial fetch
   useEffect(() => {
     let cancelled = false;
     fetch("/api/lineup", { cache: "no-store" })
       .then(async (r) => {
-        const body = await r.json().catch(() => ({}));
+        const body = await r.json().catch(() => EMPTY_LINEUP);
         if (cancelled) return;
-        const lu = body.lineup ?? EMPTY_LINEUP;
         setLineup({
-          matrix: lu.matrix ?? {},
-          notes: lu.notes ?? {},
-          updated_at: lu.updated_at ?? "",
+          matrix: body.matrix ?? {},
+          notes: body.notes ?? {},
+          updated_at: body.updated_at ?? "",
         });
         setLoaded(true);
-        if (body.error === "upstash_not_configured") {
+        if (r.headers.get("x-bb-storage") === "unconfigured") {
           setServerError(
-            "Storage isn't configured yet. Changes will not persist until the Vercel Upstash Redis integration is attached (sets KV_REST_API_URL + KV_REST_API_TOKEN).",
+            "Storage isn't configured yet. Changes will not persist until KV_REST_API_URL + KV_REST_API_TOKEN are set in Vercel.",
           );
-        } else if (body.error) {
-          setServerError("Server error: " + body.error + (body.detail ? ` (${body.detail})` : ""));
         }
       })
       .catch((e) => {
@@ -98,7 +118,7 @@ export default function LineupGrid() {
     return lineup.matrix[key]?.[pos] ?? "none";
   }
 
-  function cycleCell(key: string, pos: Pos) {
+  function cyclePill(key: string, pos: Pos) {
     setDirty(true);
     setSaveMsg(null);
     setLineup((prev) => {
@@ -134,11 +154,11 @@ export default function LineupGrid() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify(lineup),
       });
-      const body = await res.json().catch(() => ({}));
       if (!res.ok) {
+        const body = await res.json().catch(() => ({ error: res.statusText }));
         throw new Error(body.error || `HTTP ${res.status}`);
       }
-      const saved = (body.lineup ?? body) as Lineup;
+      const saved = (await res.json()) as Lineup;
       setLineup({
         matrix: saved.matrix ?? {},
         notes: saved.notes ?? {},
@@ -161,15 +181,18 @@ export default function LineupGrid() {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
       {/* Status bar */}
       <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-amber-200 bg-white p-3 shadow-sm">
-        <span className="text-sm text-stone-700">
-          Tap each cell to cycle: <span className="font-semibold text-stone-400">·</span> none →{" "}
-          <span className="font-semibold text-amber-700">✓</span> can play →{" "}
-          <span className="font-semibold text-emerald-700">★</span> should play.
-        </span>
-        <span className="ml-auto text-xs text-stone-500">
+        <input
+          type="search"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Filter players…"
+          className="min-h-11 flex-1 rounded-md border border-stone-300 px-3 py-2 text-sm"
+        />
+        <Legend />
+        <span className="text-xs text-stone-500">
           Last saved: {formatTimestamp(lineup.updated_at)}
         </span>
         <button
@@ -182,76 +205,83 @@ export default function LineupGrid() {
         </button>
       </div>
 
-      {serverError ? (
+      {serverError && (
         <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
           {serverError}
         </div>
-      ) : null}
-      {saveMsg ? (
+      )}
+      {saveMsg && (
         <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
           {saveMsg}
         </div>
-      ) : null}
+      )}
 
-      {/* Grid */}
-      <div className="overflow-x-auto rounded-2xl border border-amber-200 bg-white shadow-sm">
-        <table className="min-w-full text-sm">
-          <thead className="sticky top-0 z-10 bg-amber-50">
-            <tr>
-              <th className="sticky left-0 z-20 min-w-[10rem] bg-amber-50 px-3 py-3 text-left text-xs font-semibold uppercase tracking-wide text-stone-600">
-                Player
-              </th>
-              {POSITIONS.map((p) => (
-                <th
-                  key={p}
-                  className="px-2 py-3 text-center text-xs font-semibold uppercase tracking-wide text-stone-600"
-                >
-                  {p}
-                </th>
-              ))}
-              <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wide text-stone-600">
-                Notes
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {players.map((pl, idx) => (
-              <tr
-                key={pl.key}
-                className={idx % 2 === 0 ? "bg-white" : "bg-stone-50/60"}
-              >
-                <td className="sticky left-0 z-10 whitespace-nowrap bg-inherit px-3 py-2 font-medium text-stone-900">
-                  {pl.name}
-                </td>
-                {POSITIONS.map((p) => {
-                  const m = getMark(pl.key, p);
-                  return (
-                    <td key={p} className="px-1 py-1">
-                      <button
-                        type="button"
-                        onClick={() => cycleCell(pl.key, p)}
-                        aria-label={`${pl.name} ${p}: ${m}`}
-                        className={`block h-11 w-11 rounded-md border border-stone-200 text-lg font-bold transition ${markStyle(m)}`}
-                      >
-                        {markLabel(m)}
-                      </button>
-                    </td>
-                  );
-                })}
-                <td className="px-3 py-2">
-                  <input
-                    type="text"
-                    value={lineup.notes[pl.key] ?? ""}
-                    onChange={(e) => setNote(pl.key, e.target.value)}
-                    placeholder="—"
-                    className="min-h-9 w-full min-w-[12rem] rounded-md border border-stone-200 bg-white px-2 py-1 text-sm focus:border-amber-500 focus:outline-none"
-                  />
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      {/* Player rows with inline pills */}
+      <ul className="space-y-1 rounded-2xl border border-amber-200 bg-white p-2 shadow-sm">
+        {filtered.map((p, idx) => (
+          <li
+            key={p.key}
+            className={`flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg px-2 py-2 ${
+              idx % 2 === 0 ? "bg-white" : "bg-stone-50/50"
+            }`}
+          >
+            <span className="min-w-[6.5rem] font-semibold text-stone-900">{p.name}</span>
+            <div className="flex flex-wrap gap-1">
+              {PILL_ORDER.map((pos) => {
+                const m = getMark(p.key, pos);
+                return (
+                  <button
+                    key={pos}
+                    type="button"
+                    onClick={() => cyclePill(p.key, pos)}
+                    aria-label={`${p.name} ${pos}: ${m}`}
+                    className={`inline-flex h-8 min-w-[2.25rem] items-center justify-center rounded-full border px-2 text-xs font-semibold tabular-nums transition ${pillClass(
+                      m,
+                    )}`}
+                  >
+                    {PILL_LABEL[pos]}
+                  </button>
+                );
+              })}
+            </div>
+            <input
+              type="text"
+              value={lineup.notes[p.key] ?? ""}
+              onChange={(e) => setNote(p.key, e.target.value)}
+              placeholder="notes…"
+              className="ml-auto min-h-9 w-full min-w-[8rem] flex-1 rounded-md border border-stone-200 bg-white px-2 py-1 text-sm focus:border-amber-500 focus:outline-none sm:w-auto sm:max-w-[18rem]"
+            />
+          </li>
+        ))}
+        {filtered.length === 0 && (
+          <li className="px-3 py-6 text-center text-stone-500">No players match.</li>
+        )}
+      </ul>
+
+      <p className="text-xs text-stone-500">
+        Tap a pill to cycle: <span className="font-semibold text-stone-500">grey</span> →{" "}
+        <span className="font-semibold text-amber-700">can play</span> →{" "}
+        <span className="font-semibold text-emerald-700">should play</span> → grey.
+        {" "}{players.length} players in the roster.
+      </p>
+    </div>
+  );
+}
+
+function Legend() {
+  return (
+    <div className="flex items-center gap-2 text-xs text-stone-600">
+      <span className="inline-flex h-6 min-w-7 items-center justify-center rounded-full border border-stone-200 bg-stone-100 px-2 font-semibold text-stone-500">
+        SS
+      </span>
+      <span className="text-stone-400">→</span>
+      <span className="inline-flex h-6 min-w-7 items-center justify-center rounded-full border border-amber-400 bg-amber-300 px-2 font-semibold text-amber-950">
+        SS
+      </span>
+      <span className="text-stone-400">→</span>
+      <span className="inline-flex h-6 min-w-7 items-center justify-center rounded-full border border-emerald-600 bg-emerald-500 px-2 font-semibold text-white">
+        SS
+      </span>
     </div>
   );
 }
