@@ -17,6 +17,28 @@ export const POSITIONS = [
 ] as const;
 export type Pos = (typeof POSITIONS)[number];
 
+// Slo-pitch lineup mode:
+//   "ten": classic 10-player alignment (4 OF: LF, LCF, RCF, RF)
+//   "nine": short-handed 9-player alignment (3 OF: LF + 1 CF + RF). LCF is
+//          reused as the canonical "CF" position so storage stays uniform.
+export type LineupMode = "ten" | "nine";
+
+export const POSITIONS_BY_MODE: Record<LineupMode, Pos[]> = {
+  ten: ["1B", "2B", "3B", "SS", "P", "C", "LF", "LCF", "RCF", "RF"],
+  nine: ["1B", "2B", "3B", "SS", "P", "C", "LF", "LCF", "RF"],
+};
+
+/** Display label for a position in a given mode (LCF reads "CF" in 9-player). */
+export function positionLabel(pos: Pos, mode: LineupMode = "ten"): string {
+  if (mode === "nine" && pos === "LCF") return "CF";
+  return pos;
+}
+
+/** Auto-pick mode from attendee count. Anyone ≥10 plays full 10-player. */
+export function modeForAttendeeCount(count: number): LineupMode {
+  return count >= 10 ? "ten" : "nine";
+}
+
 export type Mark = "none" | "can" | "should";
 
 export interface Lineup {

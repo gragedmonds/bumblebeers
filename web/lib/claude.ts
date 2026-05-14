@@ -27,9 +27,16 @@ export const MODELS = {
   vision: "claude-sonnet-4-6",
 } as const;
 
+export interface MatchedName {
+  /** Roster person_key Claude matched to, or null if Claude couldn't resolve. */
+  key: string | null;
+  /** The raw text Claude saw on the screenshot (e.g. "Tyler Miehe"). */
+  raw: string;
+}
+
 export interface ExtractedAttendees {
-  in: string[];
-  out: string[];
+  in: MatchedName[];
+  out: MatchedName[];
 }
 
 export type SupportedImageType =
@@ -49,11 +56,23 @@ export type SupportedImageType =
 export async function extractAttendeesFromImage(
   base64: string,
   mediaType: SupportedImageType,
+  roster: { key: string; display_name: string }[],
+  selfKey?: string | null,
 ): Promise<ExtractedAttendees> {
   const a = getAnthropic();
   if (!a) {
     throw new Error("ANTHROPIC_API_KEY is not configured.");
   }
+  // Roster goes into the prompt so Claude can resolve "Tyler Miehe" → "ty"
+  // and "Michael Zuliani" → "mikey" without us needing a hardcoded nickname
+  // table.
+  const rosterBlock = roster
+    .map((r) => `  ${r.key} = ${r.display_name}`)
+    .join("\n");
+  const selfLine = selfKey
+    ? `\nThe literal name "You" in the screenshot refers to "${selfKey}".`
+    : "";
+
   const resp = await a.messages.create({
     model: MODELS.vision,
     max_tokens: 1024,
@@ -70,16 +89,30 @@ export async function extractAttendeesFromImage(
             text: [
               "Screenshot of poll results for a slo-pitch game night. Names are bucketed under headers like \"In\", \"Out\", and sometimes \"Maybe\".",
               "",
+              "Team roster (canonical key on the left, display name on the right):",
+              rosterBlock,
+              selfLine,
+              "",
+              "For each name on the screenshot, MATCH it to a roster key. The screenshot may show full names (\"Tyler Miehe\"), nicknames (\"Mikey\"), or first names only — pick the roster key that's clearly the same person. Common nickname/full-name pairs to be aware of (these are typical, not exhaustive):",
+              "  - Michael / Mike / Mikey",
+              "  - Tyler / Ty",
+              "  - David / Dave / Davey",
+              "  - Jonathan / Jon / Johnny",
+              "  - Christopher / Chris",
+              "  - Robert / Rob / Bob",
+              "  - Matthew / Matt",
+              "  - Last names often appear alongside first names; the first name is usually enough to match.",
+              "",
               "Return STRICT JSON only — no prose, no code fences — with this shape:",
-              '{"in":["Name", ...], "out":["Name", ...]}',
+              '{"in":[{"key":"ty","raw":"Tyler Miehe"}, ...], "out":[{"key":null,"raw":"Some Stranger"}, ...]}',
               "",
               "Rules:",
-              '- A name preceded by "~" (non-contact entry) keeps the rest of the name without the tilde.',
-              '- If you see the literal word "You" as a name, include it literally — the caller substitutes their own name.',
-              "- Strip phone numbers, timestamps, and any other metadata.",
+              '- Strip phone numbers, timestamps, and any other metadata.',
+              '- A leading "~" on a name is a contact-not-saved marker — drop the tilde.',
               '- Fold any "Maybe" names into the "out" array.',
               '- If a section is absent, return an empty array for it.',
-              "- Trim whitespace. Preserve original capitalization.",
+              "- If a name on the screenshot does NOT match anyone in the roster, set key to null and include the raw text. Do not invent matches.",
+              "- If the same name appears more than once, include it once.",
             ].join("\n"),
           },
         ],
@@ -105,7 +138,28 @@ export async function extractAttendeesFromImage(
     throw new Error(`Claude returned non-JSON: ${text.slice(0, 200)}`);
   }
   const obj = parsed as { in?: unknown; out?: unknown };
-  const toArr = (v: unknown): string[] =>
-    Array.isArray(v) ? v.map((x) => String(x).trim()).filter(Boolean) : [];
-  return { in: toArr(obj.in), out: toArr(obj.out) };
+  const validKeys = new Set(roster.map((r) => r.key));
+  const toMatched = (v: unknown): MatchedName[] => {
+    if (!Array.isArray(v)) return [];
+    const seen = new Set<string>();
+    const out: MatchedName[] = [];
+    for (const item of v) {
+      let key: string | null = null;
+      let raw = "";
+      if (typeof item === "string") {
+        raw = item.trim();
+      } else if (item && typeof item === "object") {
+        const rec = item as Record<string, unknown>;
+        if (typeof rec.key === "string" && validKeys.has(rec.key)) key = rec.key;
+        if (typeof rec.raw === "string") raw = rec.raw.trim();
+      }
+      if (!raw) continue;
+      const dedupeId = key ?? `__raw__${raw.toLowerCase()}`;
+      if (seen.has(dedupeId)) continue;
+      seen.add(dedupeId);
+      out.push({ key, raw });
+    }
+    return out;
+  };
+  return { in: toMatched(obj.in), out: toMatched(obj.out) };
 }

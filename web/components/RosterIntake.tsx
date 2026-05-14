@@ -11,7 +11,6 @@ type Bucket = {
   key: string;
   display_name: string;
   raw: string;
-  reason: string;
 };
 
 interface ParseResponse {
@@ -247,12 +246,9 @@ function Bucket({
           {items.map((p) => (
             <li key={p.key} className="flex items-center justify-between gap-2">
               <span className="font-medium">{p.display_name}</span>
-              <span className="text-xs text-stone-500">
-                {p.raw !== p.display_name ? p.raw : ""}
-                <span className="ml-2 rounded bg-white px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-stone-500">
-                  {p.reason}
-                </span>
-              </span>
+              {p.raw && p.raw.toLowerCase() !== p.display_name.toLowerCase() && (
+                <span className="text-xs text-stone-500">{p.raw}</span>
+              )}
             </li>
           ))}
         </ul>

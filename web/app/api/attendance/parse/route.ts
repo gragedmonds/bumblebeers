@@ -1,16 +1,17 @@
 // POST /api/attendance/parse
 //
-// Body: { image_base64: string, image_media_type: "image/png"|"image/jpeg"|... }
+// Body: { image_base64: string, image_media_type: "image/png"|"image/jpeg"|..., self_key?: string }
 //
-// Sends the image to Claude vision (via extractAttendeesFromImage), then
-// fuzzy-matches the names it sees against our roster (display_names from
-// snapshot.json).
+// Sends the image to Claude vision, which OCRs the names AND matches them to
+// our roster keys (including nicknames — "Mikey" → "mikey", "Tyler Miehe" →
+// "ty"). The roster is the snapshot roster plus any custom-added entries from
+// the saved lineup blob.
 //
 // Returns:
 //   {
-//     in:  [{ key, display_name, raw, reason }],   // matched roster hits
-//     out: [{ key, display_name, raw, reason }],   // matched out/maybe bucket
-//     unmatched_in:  ["raw name strings"],         // Claude saw, roster missed
+//     in:  [{ key, display_name, raw }],
+//     out: [{ key, display_name, raw }],
+//     unmatched_in:  ["raw name strings"],
 //     unmatched_out: ["raw name strings"],
 //     model: string,
 //   }
@@ -22,7 +23,12 @@ import {
   type SupportedImageType,
 } from "@/lib/claude";
 import { loadRoster } from "@/lib/data-server";
-import { matchNames } from "@/lib/match";
+import {
+  EMPTY_LINEUP,
+  LINEUP_KEY,
+  getRedis,
+  type Lineup,
+} from "@/lib/lineup";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -31,6 +37,8 @@ export const maxDuration = 30;
 interface ParseBody {
   image_base64?: string;
   image_media_type?: string;
+  /** Optional: which roster key "You" maps to in the screenshot. */
+  self_key?: string;
 }
 
 const VALID_MEDIA = new Set<SupportedImageType>([
@@ -39,23 +47,6 @@ const VALID_MEDIA = new Set<SupportedImageType>([
   "image/webp",
   "image/gif",
 ]);
-
-function matchBucket(
-  names: string[],
-  roster: { key: string; display_name: string }[],
-) {
-  const results = matchNames(names, roster);
-  const matched = results
-    .filter((r) => r.matched)
-    .map((r) => ({
-      key: r.matched!.key,
-      display_name: r.matched!.display_name,
-      raw: r.raw,
-      reason: r.matched!.reason,
-    }));
-  const unmatched = results.filter((r) => !r.matched).map((r) => r.raw);
-  return { matched, unmatched };
-}
 
 export async function POST(req: Request) {
   let body: ParseBody;
@@ -78,9 +69,35 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "image_too_large" }, { status: 413 });
   }
 
-  let extracted: { in: string[]; out: string[] };
+  // Compose the roster: snapshot players + any custom-added entries from the
+  // saved lineup blob. We include archived players too so we never silently
+  // mismatch a name on the screenshot — the UI handles filtering.
+  const baseRoster = await loadRoster();
+  const rosterByKey = new Map<string, string>(
+    baseRoster.map((p) => [p.key, p.display_name]),
+  );
+  const redis = getRedis();
+  if (redis) {
+    try {
+      const stored = await redis.get<Lineup>(LINEUP_KEY);
+      const added = (stored ?? EMPTY_LINEUP).added ?? [];
+      for (const a of added) {
+        if (a.key && !rosterByKey.has(a.key)) {
+          rosterByKey.set(a.key, a.display_name);
+        }
+      }
+    } catch {
+      // Redis read failure is non-fatal — proceed with the snapshot roster.
+    }
+  }
+  const roster = [...rosterByKey.entries()].map(([key, display_name]) => ({
+    key,
+    display_name,
+  }));
+
+  let extracted: { in: { key: string | null; raw: string }[]; out: { key: string | null; raw: string }[] };
   try {
-    extracted = await extractAttendeesFromImage(data, media);
+    extracted = await extractAttendeesFromImage(data, media, roster, body.self_key ?? null);
   } catch (e: unknown) {
     const detail = e instanceof Error ? e.message : String(e);
     const isMissingKey = detail.includes("ANTHROPIC_API_KEY");
@@ -90,9 +107,25 @@ export async function POST(req: Request) {
     );
   }
 
-  const roster = await loadRoster();
-  const inBucket = matchBucket(extracted.in, roster);
-  const outBucket = matchBucket(extracted.out, roster);
+  const bucket = (items: { key: string | null; raw: string }[]) => {
+    const matched: { key: string; display_name: string; raw: string }[] = [];
+    const unmatched: string[] = [];
+    for (const item of items) {
+      if (item.key && rosterByKey.has(item.key)) {
+        matched.push({
+          key: item.key,
+          display_name: rosterByKey.get(item.key)!,
+          raw: item.raw,
+        });
+      } else {
+        unmatched.push(item.raw);
+      }
+    }
+    return { matched, unmatched };
+  };
+
+  const inBucket = bucket(extracted.in);
+  const outBucket = bucket(extracted.out);
 
   return NextResponse.json({
     in: inBucket.matched,

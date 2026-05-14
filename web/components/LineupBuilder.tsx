@@ -10,7 +10,15 @@
 // "should play" the position, then "can play", then any eligible attendee.
 
 import { useCallback, useMemo, useState } from "react";
-import { POSITIONS, type Lineup, type Mark, type Pos } from "@/lib/lineup";
+import {
+  POSITIONS_BY_MODE,
+  modeForAttendeeCount,
+  positionLabel,
+  type Lineup,
+  type LineupMode,
+  type Mark,
+  type Pos,
+} from "@/lib/lineup";
 import type { GameLineup, InningLineup } from "@/lib/night";
 
 interface RosterPlayer {
@@ -58,6 +66,7 @@ function suggestFill(
   game: GameLineup,
   attendees: string[],
   prefs: Lineup,
+  positions: readonly Pos[],
 ): GameLineup {
   const innings = game.innings.map((row) => ({ ...row }));
   // Count current innings played per player (across this game only).
@@ -69,7 +78,7 @@ function suggestFill(
   );
   for (let i = 0; i < innings.length; i++) {
     const used = new Set(Object.values(innings[i]).filter(Boolean) as string[]);
-    for (const pos of POSITIONS) {
+    for (const pos of positions) {
       if (innings[i][pos]) continue;
       // Score every attendee
       const candidates = attendees
@@ -128,6 +137,15 @@ export default function LineupBuilder({
     gameIdx: number;
   } | null>(null);
 
+  // 9-player mode: when fewer than 10 attendees, drop one CF (the LCF/RCF
+  // pair collapses to a single CF, stored under "LCF" in the canonical
+  // matrix and rendered as "CF" in the UI).
+  const mode: LineupMode = useMemo(
+    () => modeForAttendeeCount(attending.length),
+    [attending.length],
+  );
+  const positions = useMemo(() => POSITIONS_BY_MODE[mode], [mode]);
+
   // Make sure we always have exactly 2 games to render. Re-running on every
   // render is fine — it's a couple-of-element copy.
   const ensured = useMemo(() => ensureTwoGames(games), [games]);
@@ -165,9 +183,9 @@ export default function LineupBuilder({
 
   const handleSuggest = useCallback(() => {
     const next = ensureTwoGames(ensured);
-    next[activeGame] = suggestFill(game, attending, prefs);
+    next[activeGame] = suggestFill(game, attending, prefs, positions);
     onChange(next);
-  }, [activeGame, attending, ensured, game, onChange, prefs]);
+  }, [activeGame, attending, ensured, game, onChange, prefs, positions]);
 
   const handleClearGame = useCallback(() => {
     const next = ensureTwoGames(ensured);
@@ -189,6 +207,7 @@ export default function LineupBuilder({
         team_notes: prefs.team_notes ?? "",
         game_num: activeGame + 1,
         opponent: opponent ?? undefined,
+        mode,
         // Pass existing assignments so Claude doesn't overwrite locked cells.
         existing: game.innings,
       };
@@ -202,8 +221,8 @@ export default function LineupBuilder({
         const friendly =
           json.error === "anthropic_not_configured"
             ? "Claude API key not set — add ANTHROPIC_API_KEY in Vercel to use Smart fill."
-            : json.error === "need_at_least_10_attendees"
-              ? `Need at least 10 attendees in the In bucket (have ${json.count}).`
+            : json.error === "need_at_least_9_attendees"
+              ? `Need at least 9 attendees in the In bucket (have ${json.count}).`
               : json.detail || json.error || `HTTP ${r.status}`;
         throw new Error(friendly);
       }
@@ -224,13 +243,20 @@ export default function LineupBuilder({
     } finally {
       setSmartBusy(false);
     }
-  }, [activeGame, attending, ensured, game.innings, onChange, opponent, prefs.matrix, prefs.team_notes, rosterByKey]);
+  }, [activeGame, attending, ensured, game.innings, mode, onChange, opponent, prefs.matrix, prefs.team_notes, rosterByKey]);
 
   if (attending.length === 0) {
     return (
       <div className="rounded-2xl border border-amber-200 bg-white p-4 text-sm text-stone-600 shadow-sm">
         Mark some players as &ldquo;In&rdquo; in the attendance editor first — the builder picks
         from attendees only.
+      </div>
+    );
+  }
+  if (attending.length < 9) {
+    return (
+      <div className="rounded-2xl border border-amber-200 bg-white p-4 text-sm text-stone-600 shadow-sm">
+        Need at least 9 players in the In bucket to build a lineup (have {attending.length}).
       </div>
     );
   }
@@ -268,12 +294,17 @@ export default function LineupBuilder({
         <button
           type="button"
           onClick={handleSmartFill}
-          disabled={smartBusy || attending.length < 10}
+          disabled={smartBusy || attending.length < 9}
           title="Claude reads the team notes and assigns 8 innings respecting your rules"
           className="min-h-11 rounded-md bg-amber-700 px-4 py-2 font-semibold text-white hover:bg-amber-800 disabled:opacity-50"
         >
           {smartBusy ? "Claude thinking…" : `🐝 Smart fill (Game ${activeGame + 1})`}
         </button>
+        <span className="self-center text-xs text-stone-500">
+          {mode === "nine"
+            ? `9-player mode (one CF) — ${attending.length} in`
+            : `10-player mode — ${attending.length} in`}
+        </span>
         <button
           type="button"
           onClick={handleClearGame}
@@ -320,10 +351,10 @@ export default function LineupBuilder({
             </tr>
           </thead>
           <tbody>
-            {POSITIONS.map((pos) => (
+            {positions.map((pos) => (
               <tr key={pos} className="border-t border-stone-100">
                 <td className="sticky left-0 z-10 bg-white px-2 py-1.5 font-semibold text-stone-800">
-                  {pos}
+                  {positionLabel(pos, mode)}
                 </td>
                 {INNINGS.map((inning) => {
                   const inningIdx = (inning as number) - 1;
@@ -332,7 +363,7 @@ export default function LineupBuilder({
                   // Players assigned to other positions in this inning are
                   // disqualified — they can't play two spots at once.
                   const usedElsewhere = new Set(
-                    POSITIONS.filter((p) => p !== pos).map((p) => row[p]).filter(Boolean) as string[],
+                    positions.filter((p) => p !== pos).map((p) => row[p]).filter(Boolean) as string[],
                   );
                   // Eligible candidates: attending, not playing elsewhere this inning.
                   const candidates = attending

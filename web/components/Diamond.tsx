@@ -25,6 +25,10 @@ const BASE_POINT: Record<0 | 1 | 2 | 3 | 4, { x: number; y: number }> = {
   4: HOME_PLATE,
 };
 
+// Dugout: where runners go when they're put out on the basepaths. Off-field
+// down the third-base line — out of the way of the active diamond.
+const DUGOUT_POINT = { x: -60, y: 400 };
+
 /** One runner currently sitting on the diamond. Lives in the persistent base
  * layer across consecutive at-bats in the same half-inning. */
 interface RunnerSquare {
@@ -80,21 +84,19 @@ function createRunnerSquare(
   return { name, base, rect, label };
 }
 
-/** Smoothly tween a runner square to the target base point over `ms`. Resolves
- * when the animation completes. Label offset adapts to the new base. */
-function tweenRunner(
+/** Single-segment tween from runner's current position to a target point. */
+function tweenRunnerToPoint(
   runner: RunnerSquare,
-  toBase: 0 | 1 | 2 | 3 | 4,
+  target: { x: number; y: number },
+  labelOffsetY: number,
   ms: number,
 ): Promise<void> {
   return new Promise((resolve) => {
     const start = performance.now();
     const fromX = parseFloat(runner.rect.getAttribute("x") || "0") + RUNNER_HALF;
     const fromY = parseFloat(runner.rect.getAttribute("y") || "0") + RUNNER_HALF;
-    const target = BASE_POINT[toBase];
     const fromLblY = parseFloat(runner.label.getAttribute("y") || "0");
-    const targetLblOffset = toBase === 2 ? -14 : 18;
-    const targetLblY = target.y + targetLblOffset;
+    const targetLblY = target.y + labelOffsetY;
     function frame(now: number) {
       const t = Math.min(1, (now - start) / ms);
       const ease = 1 - Math.pow(1 - t, 2);
@@ -110,6 +112,39 @@ function tweenRunner(
     }
     requestAnimationFrame(frame);
   });
+}
+
+/** Smoothly tween a runner square through the basepaths chronologically.
+ * Runners never cut across the infield — going from 2B to home goes
+ * through 3B; going from 1B to 3B goes through 2B. The total animation
+ * time is split evenly across however many segments are needed. */
+async function tweenRunner(
+  runner: RunnerSquare,
+  fromBase: 0 | 1 | 2 | 3,
+  toBase: 1 | 2 | 3 | 4,
+  totalMs: number,
+): Promise<void> {
+  // Build the chronological path through intermediate bases.
+  const path: (1 | 2 | 3 | 4)[] = [];
+  for (let b = fromBase + 1; b <= toBase; b++) {
+    path.push(b as 1 | 2 | 3 | 4);
+  }
+  if (path.length === 0) return;
+  const segmentMs = Math.max(80, Math.floor(totalMs / path.length));
+  for (const seg of path) {
+    const target = BASE_POINT[seg];
+    const offset = seg === 2 ? -14 : 18;
+    await tweenRunnerToPoint(runner, target, offset, segmentMs);
+  }
+}
+
+/** Send a runner to the dugout (off-field) with a little arc, then fade. */
+async function tweenRunnerToDugout(
+  runner: RunnerSquare,
+  totalMs: number,
+): Promise<void> {
+  await tweenRunnerToPoint(runner, DUGOUT_POINT, 18, totalMs);
+  await fadeAndRemoveRunner(runner, 250);
 }
 
 /** Fade a runner's rect + label to zero opacity and remove from DOM. */

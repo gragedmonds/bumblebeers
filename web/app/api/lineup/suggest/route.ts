@@ -17,7 +17,12 @@
 
 import { NextResponse } from "next/server";
 import { getAnthropic, MODELS } from "@/lib/claude";
-import { POSITIONS, type Mark, type Pos } from "@/lib/lineup";
+import {
+  POSITIONS_BY_MODE,
+  type LineupMode,
+  type Mark,
+  type Pos,
+} from "@/lib/lineup";
 import type { InningLineup } from "@/lib/night";
 import type Anthropic from "@anthropic-ai/sdk";
 
@@ -31,16 +36,14 @@ interface SuggestBody {
   team_notes?: string;
   game_num?: 1 | 2;
   opponent?: string;
+  mode?: LineupMode;
   existing?: InningLineup[];
 }
 
-const INSTRUCTIONS = `You are filling a slo-pitch softball lineup card. The team plays an 8-inning game with these 10 defensive positions:
-
-  Infield: 1B, 2B, 3B, SS, P, C
-  Outfield: LF, LCF, RCF, RF
+const INSTRUCTIONS_BASE = `You are filling a slo-pitch softball lineup card for an 8-inning game.
 
 Hard rules:
-  1. In each inning, every position is filled by exactly one player.
+  1. In each inning, every position in the position list is filled by exactly one player.
   2. In each inning, each player plays AT MOST one position. No one is in two spots at once.
   3. Only players in the supplied attendee list can be assigned.
   4. Use the canonical person_key (not the display name) for every assignment.
@@ -52,13 +55,9 @@ Soft rules (prioritize, in this order, when there's slack):
   c. Spread innings across the roster — minimize the max number of innings any single player plays, unless team_notes overrides.
   d. If "existing" assignments are provided, treat them as locked — don't overwrite them.
 
-Output format — return ONE JSON object only, no markdown, no prose outside it:
+Output format — return ONE JSON object only, no markdown, no prose outside it. The "innings" array contains 8 entries (one per inning). Each entry has a key for every position in the position list, with a person_key string value or null:
   {
-    "innings": [
-      { "1B": "person_key|null", "2B": "...", "3B": "...", "SS": "...", "P": "...", "C": "...",
-        "LF": "...", "LCF": "...", "RCF": "...", "RF": "..." },
-      ... 8 entries total, one per inning ...
-    ],
+    "innings": [ { ... }, ... 8 total ],
     "explanation": "1-3 sentences naming the constraints from team_notes you applied and any conflicts you couldn't resolve."
   }`;
 
@@ -81,9 +80,9 @@ export async function POST(req: Request) {
     (a): a is { key: string; name: string } =>
       !!a && typeof a.key === "string" && a.key.length > 0 && typeof a.name === "string",
   );
-  if (attendees.length < 10) {
+  if (attendees.length < 9) {
     return NextResponse.json(
-      { error: "need_at_least_10_attendees", count: attendees.length },
+      { error: "need_at_least_9_attendees", count: attendees.length },
       { status: 400 },
     );
   }
@@ -91,15 +90,24 @@ export async function POST(req: Request) {
   const teamNotes = (body.team_notes ?? "").trim();
   const gameNum = body.game_num === 2 ? 2 : 1;
   const opponent = (body.opponent ?? "").trim() || null;
+  // Mode = explicit body field, otherwise inferred from attendee count.
+  const mode: LineupMode =
+    body.mode === "nine" || body.mode === "ten"
+      ? body.mode
+      : attendees.length >= 10
+        ? "ten"
+        : "nine";
+  const positions = POSITIONS_BY_MODE[mode];
   const existing = Array.isArray(body.existing) ? body.existing : null;
 
   // Build a per-attendee summary so the model sees exactly who's available
-  // and which positions each one can / should play.
+  // and which positions each one can / should play. Only emit preferences
+  // for positions in the current mode (skip RCF entirely in 9-player mode).
   const attendeeBlock = attendees
     .map((a) => {
       const row = prefs[a.key] || {};
-      const should = POSITIONS.filter((p) => row[p] === "should");
-      const can = POSITIONS.filter((p) => row[p] === "can");
+      const should = positions.filter((p) => row[p] === "should");
+      const can = positions.filter((p) => row[p] === "can");
       const parts: string[] = [`${a.key} (${a.name})`];
       if (should.length) parts.push(`should: ${should.join(",")}`);
       if (can.length) parts.push(`can: ${can.join(",")}`);
@@ -112,13 +120,23 @@ export async function POST(req: Request) {
     ? "\nExisting locked assignments (do not change):\n" +
       existing
         .map((row, i) => {
-          const cells = POSITIONS.map((p) => row[p] ? `${p}=${row[p]}` : null).filter(Boolean);
+          const cells = positions.map((p) => row[p] ? `${p}=${row[p]}` : null).filter(Boolean);
           return `  Inning ${i + 1}: ${cells.length ? cells.join(", ") : "(empty)"}`;
         })
         .join("\n")
     : "";
 
+  const positionList = positions
+    .map((p) => `${p}${mode === "nine" && p === "LCF" ? " (centerfield — one CF in 9-player mode)" : ""}`)
+    .join(", ");
+  const modeDescription =
+    mode === "nine"
+      ? `9-player short-handed alignment — exactly 9 fielders per inning, 1 centerfielder instead of LCF/RCF. Use position keys: ${positions.join(", ")} (LCF is the one CF).`
+      : `Standard 10-player slo-pitch alignment — exactly 10 fielders per inning with 4 outfielders. Use position keys: ${positions.join(", ")}.`;
+
   const userPrompt = `Game ${gameNum} of 2${opponent ? ` vs ${opponent}` : ""}.
+Mode: ${modeDescription}
+Positions to fill per inning (keys in your output): ${positionList}
 
 Attendees (${attendees.length}):
 ${attendeeBlock}
@@ -128,12 +146,12 @@ Team notes:
 ${teamNotes || "(none — apply soft rules and spread innings evenly)"}
 """${existingBlock}
 
-Generate the 8-inning lineup now.`;
+Generate the 8-inning lineup now. Every output inning object must have exactly these keys: ${positions.join(", ")}.`;
 
   const system: Anthropic.TextBlockParam[] = [
     {
       type: "text",
-      text: INSTRUCTIONS,
+      text: INSTRUCTIONS_BASE,
       cache_control: { type: "ephemeral" },
     },
   ];
@@ -174,7 +192,9 @@ Generate the 8-inning lineup now.`;
     const src = parsed.innings[i] as Record<string, unknown> | undefined;
     const row: InningLineup = {};
     if (src && typeof src === "object") {
-      for (const pos of POSITIONS) {
+      // Only accept keys in the active position set — drops e.g. a stray
+      // RCF assignment that Claude might emit in 9-player mode.
+      for (const pos of positions) {
         const v = src[pos];
         if (typeof v === "string" && v && attendeeKeys.has(v)) {
           row[pos] = v;
