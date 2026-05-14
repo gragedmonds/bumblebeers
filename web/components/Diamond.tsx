@@ -6,6 +6,15 @@ import type { AtBat } from "@/lib/data";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 
+// Base-marker coordinates on the SVG viewport (must match the field <rect>s below).
+const BASE_POSITIONS: Record<1 | 2 | 3, { x: number; y: number }> = {
+  1: { x: 285, y: 205 },
+  2: { x: 160, y: 90 },
+  3: { x: 35, y: 205 },
+};
+const HOME_PLATE = { x: 160, y: 320 };
+const RUNNER_DOT_COLOR = "#b45309"; // amber-700, matches the bee theme
+
 const RESULT_COLORS: Record<string, string> = {
   single: "#69d68f",
   double: "#3aaaff",
@@ -174,6 +183,94 @@ function paintMarker(
   return { dot, lbl: null };
 }
 
+function paintRunners(
+  active: SVGGElement,
+  runners: { 1: string | null; 2: string | null; 3: string | null },
+): SVGElement[] {
+  const created: SVGElement[] = [];
+  (Object.keys(BASE_POSITIONS) as unknown as Array<1 | 2 | 3>).forEach((b) => {
+    const key = b as 1 | 2 | 3;
+    const name = runners[key];
+    if (!name) return;
+    const { x, y } = BASE_POSITIONS[key];
+    const dot = document.createElementNS(SVG_NS, "circle");
+    dot.setAttribute("cx", String(x));
+    dot.setAttribute("cy", String(y));
+    dot.setAttribute("r", "8");
+    dot.setAttribute("fill", RUNNER_DOT_COLOR);
+    dot.setAttribute("stroke", "#fff");
+    dot.setAttribute("stroke-width", "2");
+    dot.setAttribute("opacity", "0.95");
+    active.appendChild(dot);
+    created.push(dot);
+    const lbl = document.createElementNS(SVG_NS, "text");
+    // Push label outward away from the diamond center so it doesn't overlap dirt.
+    const labelOffsetY = key === 2 ? -14 : 18;
+    lbl.setAttribute("x", String(x));
+    lbl.setAttribute("y", String(y + labelOffsetY));
+    lbl.setAttribute("text-anchor", "middle");
+    lbl.setAttribute("fill", "#3b2e10");
+    lbl.setAttribute("font-size", "11");
+    lbl.setAttribute("font-weight", "600");
+    lbl.setAttribute("paint-order", "stroke");
+    lbl.setAttribute("stroke", "#fff");
+    lbl.setAttribute("stroke-width", "3");
+    lbl.setAttribute("opacity", "0.95");
+    lbl.textContent = name;
+    active.appendChild(lbl);
+    created.push(lbl);
+  });
+  return created;
+}
+
+function flashHome(active: SVGGElement, runs: number): SVGElement[] {
+  const created: SVGElement[] = [];
+  // Two concentric rings expand outward from home plate.
+  for (let i = 0; i < 2; i++) {
+    const ring = document.createElementNS(SVG_NS, "circle");
+    ring.setAttribute("cx", String(HOME_PLATE.x));
+    ring.setAttribute("cy", String(HOME_PLATE.y));
+    ring.setAttribute("r", "10");
+    ring.setAttribute("fill", "none");
+    ring.setAttribute("stroke", "#ffd24a");
+    ring.setAttribute("stroke-width", "3");
+    ring.setAttribute("opacity", "0.95");
+    active.appendChild(ring);
+    created.push(ring);
+    const anim = ring.animate(
+      [
+        { r: "10", opacity: 0.95, strokeWidth: 3 },
+        { r: "40", opacity: 0, strokeWidth: 1 },
+      ] as unknown as Keyframe[],
+      { duration: 900, delay: i * 220, fill: "forwards" },
+    );
+    anim.onfinish = () => ring.remove();
+  }
+  // Floating "+N RUN" badge above home plate.
+  const badge = document.createElementNS(SVG_NS, "text");
+  badge.setAttribute("x", String(HOME_PLATE.x));
+  badge.setAttribute("y", String(HOME_PLATE.y - 18));
+  badge.setAttribute("text-anchor", "middle");
+  badge.setAttribute("fill", "#92400e");
+  badge.setAttribute("font-size", "16");
+  badge.setAttribute("font-weight", "800");
+  badge.setAttribute("paint-order", "stroke");
+  badge.setAttribute("stroke", "#fff");
+  badge.setAttribute("stroke-width", "3");
+  badge.textContent = `+${runs} RUN${runs === 1 ? "" : "S"}`;
+  active.appendChild(badge);
+  created.push(badge);
+  const badgeAnim = badge.animate(
+    [
+      { opacity: 1, transform: `translate(0px, 0px)` },
+      { opacity: 0, transform: `translate(0px, -22px)` },
+    ] as unknown as Keyframe[],
+    { duration: 1200, fill: "forwards" },
+  );
+  badgeAnim.onfinish = () => badge.remove();
+  return created;
+}
+
 function fadeMarker(
   el: SVGElement,
   fadeMs: number,
@@ -323,6 +420,16 @@ export default function Diamond() {
       const traceDur = Math.min(speedSec * 0.6, 0.6);
       const fadeDur = Math.max(speedSec * 1.2, 0.6);
       const c = colorFor(ab.result || undefined);
+
+      // Phase 3: paint any runners who were on base when the ball was hit.
+      const runnerEls = ab.runners_before
+        ? paintRunners(active, {
+            1: ab.runners_before["1"],
+            2: ab.runners_before["2"],
+            3: ab.runners_before["3"],
+          })
+        : [];
+
       const line = document.createElementNS(SVG_NS, "line");
       line.setAttribute("x1", "160");
       line.setAttribute("y1", "320");
@@ -364,10 +471,17 @@ export default function Diamond() {
         }
         fadeMarker(ball, 250, 0);
         fadeMarker(line, 350, 0);
+        // Phase 3: flash home plate for run-scoring at-bats.
+        if (ab.run_scoring && ab.runs_scored > 0) {
+          flashHome(active!, ab.runs_scored);
+        }
+        // Fade out the runner overlay so the next at-bat starts clean.
+        runnerEls.forEach((el) => fadeMarker(el, 400, 0));
         setTimeout(() => {
           ball.remove();
           line.remove();
-        }, 400);
+          runnerEls.forEach((el) => el.remove());
+        }, 600);
       }
       requestAnimationFrame(frame);
     },

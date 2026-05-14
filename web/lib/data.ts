@@ -19,6 +19,12 @@ export type AtBatResult =
 export type FieldZone = "infield" | "outfield" | "other";
 export type FieldSide = "left" | "middle" | "right" | "other";
 
+export interface RunnersBefore {
+  "1": string | null;
+  "2": string | null;
+  "3": string | null;
+}
+
 export interface AtBat {
   person_key: string;
   batter: string | null;
@@ -36,6 +42,7 @@ export interface AtBat {
   y: number | null;
   transaction_seq: number;
   event_id: string | null;
+  runners_before: RunnersBefore;
 }
 
 export interface PlayerSeason {
