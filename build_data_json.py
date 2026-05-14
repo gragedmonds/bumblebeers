@@ -795,6 +795,7 @@ def main():
         at_bats.extend(synthetic)
         with_runners = 0
         with_moves = 0
+        runs_recomputed = 0
         for ab in at_bats:
             key = (ab.get("event_id"), ab.get("transaction_seq"))
             m = motion.get(key)
@@ -812,9 +813,21 @@ def main():
                     with_runners += 1
                 if ab["runner_moves"]:
                     with_moves += 1
+                # Recompute runs_scored from `moves`: count every runner that
+                # crossed home (to == 4). build_at_bats's run-counter only
+                # counted EXPLICIT top-level base_running base=4 events, so it
+                # undercounted plays where the scorer didn't tag every
+                # scoring runner. The motion walker tracks both explicit and
+                # heuristic advancement, so it's strictly more complete.
+                moves_runs = sum(1 for mv in ab["runner_moves"] if mv.get("to") == 4)
+                if moves_runs != (ab.get("runs_scored") or 0):
+                    runs_recomputed += 1
+                ab["runs_scored"] = moves_runs
+                ab["run_scoring"] = moves_runs > 0
         print(
             f"motion: {with_runners}/{len(at_bats)} at-bats with runners on, "
-            f"{with_moves} with explicit runner moves"
+            f"{with_moves} with explicit runner moves; "
+            f"recomputed runs_scored on {runs_recomputed} at-bats"
         )
     else:
         for ab in at_bats:
