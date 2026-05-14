@@ -217,7 +217,7 @@ export default function AskBeeves() {
           onClick={() => setOpen(true)}
           aria-label="Ask Beeves"
           title="Ask Beeves — chat with Claude about the stats"
-          className="fixed bottom-4 right-4 z-30 inline-flex h-14 w-14 items-center justify-center rounded-full bg-amber-700 text-2xl text-white shadow-lg ring-1 ring-amber-900/20 transition hover:scale-105 hover:bg-amber-800 active:scale-95 sm:bottom-6 sm:right-6 sm:h-16 sm:w-16 sm:text-3xl"
+          className="fixed bottom-20 right-4 z-30 inline-flex h-14 w-14 items-center justify-center rounded-full bg-amber-700 text-2xl text-white shadow-lg ring-1 ring-amber-900/20 transition hover:scale-105 hover:bg-amber-800 active:scale-95 md:bottom-6 md:right-6 md:h-16 md:w-16 md:text-3xl"
         >
           <span aria-hidden>🐝</span>
         </button>

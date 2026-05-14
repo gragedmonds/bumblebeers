@@ -609,26 +609,51 @@ export default function Diamond() {
       const c = colorFor(ab.result || undefined);
 
       // ── PERSISTENT BASE STATE ────────────────────────────────────────────
-      // If this at-bat is in a new half-inning, clear any leftover runners
-      // synchronously and re-seed from the BEFORE snapshot in the same tick.
-      // (Using a fade-then-seed handoff caused a visible flicker on fast
-      // browsers when playback speed was high — by the time the seed
-      // landed, the next at-bat had already started another transition.)
-      // Same inning: trust internal state and let runner_moves animate.
+      // Reconcile displayed runners against this AB's `runners_before`
+      // snapshot. Anyone currently on the diamond who's NOT named in
+      // runners_before shouldn't be there — wipe them synchronously. This
+      // is the single source of truth for "who's actually on base right
+      // now", and it catches:
+      //   1. Inning transitions (next AB's runners_before is empty → all
+      //      leftover runners cleared, no race-condition timing)
+      //   2. Missed-move data quirks (runner who got out without an
+      //      explicit move never accumulates as a "stuck" square)
+      //   3. The general "anything we haven't already removed" case
+      // After the wipe, seed any expected runners we don't have yet — most
+      // of the time this is a no-op (the animation already placed them),
+      // but it's the recovery path for snapshot-to-display drift.
       const inningId = ab.half_inning_id ?? null;
-      const inningChanged = inningId !== lastHalfInningRef.current;
-      if (inningChanged) {
-        // Synchronous teardown of any leftover squares.
-        for (const r of runnersRef.current.values()) {
+      const before = ab.runners_before ?? null;
+      const expectedKeys = new Set<string>();
+      const expectedByBase: { 1?: string; 2?: string; 3?: string } = {};
+      if (before) {
+        for (const b of [1, 2, 3] as const) {
+          const nm = before[String(b) as "1" | "2" | "3"];
+          if (nm) {
+            const key = runnerKey(nm);
+            expectedKeys.add(key);
+            expectedByBase[b] = nm;
+          }
+        }
+      }
+      // 1. Remove any displayed runner not expected here.
+      for (const [key, r] of [...runnersRef.current.entries()]) {
+        if (!expectedKeys.has(key)) {
           r.rect.remove();
           r.label.remove();
+          runnersRef.current.delete(key);
         }
-        runnersRef.current.clear();
-        if (ab.runners_before) {
-          seedRunnersFromSnapshot(baseLayer, runnersRef.current, ab.runners_before);
-        }
-        lastHalfInningRef.current = inningId;
       }
+      // 2. Seed any expected runner we're missing (recovery path).
+      for (const b of [1, 2, 3] as const) {
+        const nm = expectedByBase[b];
+        if (!nm) continue;
+        if (!runnersRef.current.has(runnerKey(nm))) {
+          const sq = createRunnerSquare(baseLayer, nm, b);
+          runnersRef.current.set(runnerKey(nm), sq);
+        }
+      }
+      lastHalfInningRef.current = inningId;
 
       // ── BALL ANIMATION (unchanged) ───────────────────────────────────────
       const line = document.createElementNS(SVG_NS, "line");
@@ -738,14 +763,21 @@ export default function Diamond() {
           setTimeout(() => flashHome(active!, ab.runs_scored), kickoff + moveMs * 0.7);
         }
         // If this is the last at-bat of its half-inning (3 outs / end of
-        // inning), clear the basepaths after the runner motion settles.
-        // Otherwise leftover runners would only clear when the NEXT at-bat
-        // from a different half-inning starts — too late visually.
+        // inning) AND we're at the end of the sequence, clear the basepaths
+        // after the runner motion settles. For mid-sequence inning ends the
+        // next AB's reconciliation will handle it; we only need the explicit
+        // clear when there IS no next AB.
         if (isLastOfHalfInning) {
           const clearAt = kickoff + moveMs + 300;
+          const scheduledInning = inningId;
           setTimeout(() => {
-            void clearAllRunners(runnersRef.current, 350);
-            lastHalfInningRef.current = null;
+            // Guard against the race where the next AB already started a
+            // new half-inning and seeded fresh runners — only wipe if we're
+            // still in the same half-inning we scheduled this for.
+            if (lastHalfInningRef.current === scheduledInning) {
+              void clearAllRunners(runnersRef.current, 350);
+              lastHalfInningRef.current = null;
+            }
           }, clearAt);
         }
         setTimeout(() => {
