@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSnapshot } from "@/lib/useSnapshot";
-import type { AtBat } from "@/lib/data";
+import type { AtBat, RunnerMove } from "@/lib/data";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 
@@ -14,6 +14,148 @@ const BASE_POSITIONS: Record<1 | 2 | 3, { x: number; y: number }> = {
 };
 const HOME_PLATE = { x: 160, y: 320 };
 const RUNNER_DOT_COLOR = "#b45309"; // amber-700, matches the bee theme
+
+// Point lookups by base-id. 0 = batter's box (= home plate for animation
+// purposes), 1/2/3 = field bases, 4 = scored (animate to home then disappear).
+const BASE_POINT: Record<0 | 1 | 2 | 3 | 4, { x: number; y: number }> = {
+  0: HOME_PLATE,
+  1: BASE_POSITIONS[1],
+  2: BASE_POSITIONS[2],
+  3: BASE_POSITIONS[3],
+  4: HOME_PLATE,
+};
+
+/** One runner currently sitting on the diamond. Lives in the persistent base
+ * layer across consecutive at-bats in the same half-inning. */
+interface RunnerSquare {
+  name: string;
+  base: 0 | 1 | 2 | 3; // last known stationary base
+  rect: SVGRectElement;
+  label: SVGTextElement;
+}
+
+const RUNNER_SQUARE_SIZE = 14;
+const RUNNER_HALF = RUNNER_SQUARE_SIZE / 2;
+
+function runnerKey(name: string): string {
+  // First-name-collision risk for our small team is low; if it becomes one,
+  // bake person_key into the move payload instead of display name.
+  return name.trim().toLowerCase();
+}
+
+function createRunnerSquare(
+  layer: SVGGElement,
+  name: string,
+  base: 0 | 1 | 2 | 3,
+): RunnerSquare {
+  const { x, y } = BASE_POINT[base];
+  const rect = document.createElementNS(SVG_NS, "rect");
+  rect.setAttribute("x", String(x - RUNNER_HALF));
+  rect.setAttribute("y", String(y - RUNNER_HALF));
+  rect.setAttribute("width", String(RUNNER_SQUARE_SIZE));
+  rect.setAttribute("height", String(RUNNER_SQUARE_SIZE));
+  rect.setAttribute("rx", "2");
+  rect.setAttribute("fill", RUNNER_DOT_COLOR);
+  rect.setAttribute("stroke", "#fff");
+  rect.setAttribute("stroke-width", "2");
+  rect.setAttribute("opacity", "0.95");
+  layer.appendChild(rect);
+
+  const label = document.createElementNS(SVG_NS, "text");
+  // Push label outward from the diamond center so it doesn't sit on the dirt.
+  const labelOffsetY = base === 2 ? -14 : 18;
+  label.setAttribute("x", String(x));
+  label.setAttribute("y", String(y + labelOffsetY));
+  label.setAttribute("text-anchor", "middle");
+  label.setAttribute("fill", "#3b2e10");
+  label.setAttribute("font-size", "11");
+  label.setAttribute("font-weight", "600");
+  label.setAttribute("paint-order", "stroke");
+  label.setAttribute("stroke", "#fff");
+  label.setAttribute("stroke-width", "3");
+  label.setAttribute("opacity", "0.95");
+  label.textContent = name;
+  layer.appendChild(label);
+
+  return { name, base, rect, label };
+}
+
+/** Smoothly tween a runner square to the target base point over `ms`. Resolves
+ * when the animation completes. Label offset adapts to the new base. */
+function tweenRunner(
+  runner: RunnerSquare,
+  toBase: 0 | 1 | 2 | 3 | 4,
+  ms: number,
+): Promise<void> {
+  return new Promise((resolve) => {
+    const start = performance.now();
+    const fromX = parseFloat(runner.rect.getAttribute("x") || "0") + RUNNER_HALF;
+    const fromY = parseFloat(runner.rect.getAttribute("y") || "0") + RUNNER_HALF;
+    const target = BASE_POINT[toBase];
+    const fromLblY = parseFloat(runner.label.getAttribute("y") || "0");
+    const targetLblOffset = toBase === 2 ? -14 : 18;
+    const targetLblY = target.y + targetLblOffset;
+    function frame(now: number) {
+      const t = Math.min(1, (now - start) / ms);
+      const ease = 1 - Math.pow(1 - t, 2);
+      const x = fromX + (target.x - fromX) * ease;
+      const y = fromY + (target.y - fromY) * ease;
+      runner.rect.setAttribute("x", String(x - RUNNER_HALF));
+      runner.rect.setAttribute("y", String(y - RUNNER_HALF));
+      runner.label.setAttribute("x", String(x));
+      const lblY = fromLblY + (targetLblY - fromLblY) * ease;
+      runner.label.setAttribute("y", String(lblY));
+      if (t < 1) requestAnimationFrame(frame);
+      else resolve();
+    }
+    requestAnimationFrame(frame);
+  });
+}
+
+/** Fade a runner's rect + label to zero opacity and remove from DOM. */
+function fadeAndRemoveRunner(runner: RunnerSquare, ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    const start = performance.now();
+    const fromR = parseFloat(runner.rect.getAttribute("opacity") || "1");
+    const fromL = parseFloat(runner.label.getAttribute("opacity") || "1");
+    function frame(now: number) {
+      const t = Math.min(1, (now - start) / ms);
+      runner.rect.setAttribute("opacity", String(fromR * (1 - t)));
+      runner.label.setAttribute("opacity", String(fromL * (1 - t)));
+      if (t < 1) requestAnimationFrame(frame);
+      else {
+        runner.rect.remove();
+        runner.label.remove();
+        resolve();
+      }
+    }
+    requestAnimationFrame(frame);
+  });
+}
+
+function clearAllRunners(
+  map: Map<string, RunnerSquare>,
+  fadeMs = 200,
+): Promise<void[]> {
+  const all = [...map.values()];
+  map.clear();
+  return Promise.all(all.map((r) => fadeAndRemoveRunner(r, fadeMs)));
+}
+
+/** Re-seed the persistent base layer from a known-good snapshot (used when
+ * the half-inning changes and we can't trust the carry-over state). */
+function seedRunnersFromSnapshot(
+  layer: SVGGElement,
+  map: Map<string, RunnerSquare>,
+  snap: { "1": string | null; "2": string | null; "3": string | null },
+) {
+  for (const b of [1, 2, 3] as const) {
+    const name = snap[String(b) as "1" | "2" | "3"];
+    if (!name) continue;
+    const r = createRunnerSquare(layer, name, b);
+    map.set(runnerKey(name), r);
+  }
+}
 
 const RESULT_COLORS: Record<string, string> = {
   single: "#69d68f",
@@ -317,6 +459,11 @@ export default function Diamond() {
 
   const activeLayerRef = useRef<SVGGElement | null>(null);
   const trailLayerRef = useRef<SVGGElement | null>(null);
+  // Persistent layer for runner squares that survive across at-bats within
+  // the same half-inning. Wiped on inning change, filter change, or reset.
+  const baseLayerRef = useRef<SVGGElement | null>(null);
+  const runnersRef = useRef<Map<string, RunnerSquare>>(new Map());
+  const lastHalfInningRef = useRef<string | null>(null);
   const playingRef = useRef(false);
   const idxRef = useRef(0);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -392,6 +539,9 @@ export default function Diamond() {
   const clearLayers = useCallback(() => {
     if (activeLayerRef.current) activeLayerRef.current.innerHTML = "";
     if (trailLayerRef.current) trailLayerRef.current.innerHTML = "";
+    if (baseLayerRef.current) baseLayerRef.current.innerHTML = "";
+    runnersRef.current.clear();
+    lastHalfInningRef.current = null;
   }, []);
 
   const pause = useCallback(() => {
@@ -415,21 +565,29 @@ export default function Diamond() {
     (ab: AtBat) => {
       const active = activeLayerRef.current;
       const trail = trailLayerRef.current;
-      if (!active || !trail || ab.x == null || ab.y == null) return;
+      const baseLayer = baseLayerRef.current;
+      if (!active || !trail || !baseLayer || ab.x == null || ab.y == null) return;
       const speedSec = speedRef.current;
       const traceDur = Math.min(speedSec * 0.6, 0.6);
       const fadeDur = Math.max(speedSec * 1.2, 0.6);
+      const moveDur = Math.max(speedSec * 0.9, 0.45); // runners take a beat longer than the ball
       const c = colorFor(ab.result || undefined);
 
-      // Phase 3: paint any runners who were on base when the ball was hit.
-      const runnerEls = ab.runners_before
-        ? paintRunners(active, {
-            1: ab.runners_before["1"],
-            2: ab.runners_before["2"],
-            3: ab.runners_before["3"],
-          })
-        : [];
+      // ── PERSISTENT BASE STATE ────────────────────────────────────────────
+      // If this at-bat is in a new half-inning, fade out any leftover runners
+      // and re-seed from the BEFORE snapshot. Same inning: trust internal state
+      // and let runner_moves animate the transitions.
+      const inningId = ab.half_inning_id ?? null;
+      const inningChanged = inningId !== lastHalfInningRef.current;
+      if (inningChanged) {
+        // Fire-and-forget fade; we don't await it before painting the ball.
+        void clearAllRunners(runnersRef.current, 220).then(() => {
+          if (ab.runners_before) seedRunnersFromSnapshot(baseLayer, runnersRef.current, ab.runners_before);
+        });
+        lastHalfInningRef.current = inningId;
+      }
 
+      // ── BALL ANIMATION (unchanged) ───────────────────────────────────────
       const line = document.createElementNS(SVG_NS, "line");
       line.setAttribute("x1", "160");
       line.setAttribute("y1", "320");
@@ -471,16 +629,65 @@ export default function Diamond() {
         }
         fadeMarker(ball, 250, 0);
         fadeMarker(line, 350, 0);
-        // Phase 3: flash home plate for run-scoring at-bats.
+        // ── RUNNER MOTION ──────────────────────────────────────────────────
+        // Animate every transition in ab.runner_moves. Fire after the ball
+        // lands (so the visual reads as "play happens then runners react").
+        // For inning-changed at-bats we wait for the seed to land before
+        // animating moves; for same-inning we kick off immediately.
+        const moves = (ab.runner_moves ?? []) as RunnerMove[];
+        const moveMs = moveDur * 1000;
+        const kickoff = inningChanged ? 260 : 0;
+        setTimeout(() => {
+          for (const mv of moves) {
+            const key = runnerKey(mv.name);
+            const map = runnersRef.current;
+            // New batter stepping out of the box (from=0): create a square
+            // at home plate, then animate to wherever they ended up.
+            if (mv.from === 0) {
+              const r = createRunnerSquare(baseLayer!, mv.name, 0);
+              map.set(key, r);
+              if (mv.to === "out") {
+                void fadeAndRemoveRunner(r, 350).then(() => map.delete(key));
+              } else {
+                void tweenRunner(r, mv.to, moveMs).then(() => {
+                  if (mv.to === 4) {
+                    // Scored. Pull the square off the field.
+                    void fadeAndRemoveRunner(r, 280).then(() => map.delete(key));
+                  } else {
+                    r.base = mv.to as 1 | 2 | 3;
+                  }
+                });
+              }
+              continue;
+            }
+            // Existing runner advancing. Look them up; if they aren't on the
+            // diamond (data gap), conjure a square at their `from` base.
+            let r = map.get(key);
+            if (!r) {
+              r = createRunnerSquare(baseLayer!, mv.name, mv.from);
+              map.set(key, r);
+            }
+            if (mv.to === "out") {
+              void fadeAndRemoveRunner(r, 350).then(() => map.delete(key));
+            } else {
+              void tweenRunner(r, mv.to, moveMs).then(() => {
+                if (mv.to === 4) {
+                  void fadeAndRemoveRunner(r!, 280).then(() => map.delete(key));
+                } else {
+                  r!.base = mv.to as 1 | 2 | 3;
+                }
+              });
+            }
+          }
+        }, kickoff);
+        // Run-scoring flash fires alongside the runner motion so the crossing
+        // of home reads as a beat in the visual.
         if (ab.run_scoring && ab.runs_scored > 0) {
-          flashHome(active!, ab.runs_scored);
+          setTimeout(() => flashHome(active!, ab.runs_scored), kickoff + moveMs * 0.7);
         }
-        // Fade out the runner overlay so the next at-bat starts clean.
-        runnerEls.forEach((el) => fadeMarker(el, 400, 0));
         setTimeout(() => {
           ball.remove();
           line.remove();
-          runnerEls.forEach((el) => el.remove());
         }, 600);
       }
       requestAnimationFrame(frame);
@@ -1014,6 +1221,7 @@ export default function Diamond() {
               <text x="160" y="200" textAnchor="middle">P</text>
             </g>
             <g ref={trailLayerRef} />
+            <g ref={baseLayerRef} />
             <g ref={activeLayerRef} />
           </svg>
         </div>
