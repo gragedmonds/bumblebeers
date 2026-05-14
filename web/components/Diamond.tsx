@@ -597,7 +597,7 @@ export default function Diamond() {
   }, []);
 
   const animateOne = useCallback(
-    (ab: AtBat) => {
+    (ab: AtBat, isLastOfHalfInning = false) => {
       const active = activeLayerRef.current;
       const trail = trailLayerRef.current;
       const baseLayer = baseLayerRef.current;
@@ -677,14 +677,17 @@ export default function Diamond() {
             const key = runnerKey(mv.name);
             const map = runnersRef.current;
             // New batter stepping out of the box (from=0): create a square
-            // at home plate, then animate to wherever they ended up.
+            // at home plate, then animate through the basepaths to wherever
+            // they ended up. The batter ALWAYS runs through 1B/2B/3B in
+            // order — no diagonals across the infield.
             if (mv.from === 0) {
               const r = createRunnerSquare(baseLayer!, mv.name, 0);
               map.set(key, r);
               if (mv.to === "out") {
-                void fadeAndRemoveRunner(r, 350).then(() => map.delete(key));
+                // Out at the plate (rare) — send to dugout.
+                void tweenRunnerToDugout(r, 320).then(() => map.delete(key));
               } else {
-                void tweenRunner(r, mv.to, moveMs).then(() => {
+                void tweenRunner(r, 0, mv.to, moveMs).then(() => {
                   if (mv.to === 4) {
                     // Scored. Pull the square off the field.
                     void fadeAndRemoveRunner(r, 280).then(() => map.delete(key));
@@ -703,13 +706,17 @@ export default function Diamond() {
               map.set(key, r);
             }
             if (mv.to === "out") {
-              void fadeAndRemoveRunner(r, 350).then(() => map.delete(key));
+              // Tagged or forced out — slide to the dugout instead of just
+              // vanishing in place.
+              const runner = r;
+              void tweenRunnerToDugout(runner, 320).then(() => map.delete(key));
             } else {
-              void tweenRunner(r, mv.to, moveMs).then(() => {
+              const runner = r;
+              void tweenRunner(runner, mv.from, mv.to, moveMs).then(() => {
                 if (mv.to === 4) {
-                  void fadeAndRemoveRunner(r!, 280).then(() => map.delete(key));
+                  void fadeAndRemoveRunner(runner, 280).then(() => map.delete(key));
                 } else {
-                  r!.base = mv.to as 1 | 2 | 3;
+                  runner.base = mv.to as 1 | 2 | 3;
                 }
               });
             }
@@ -719,6 +726,17 @@ export default function Diamond() {
         // of home reads as a beat in the visual.
         if (ab.run_scoring && ab.runs_scored > 0) {
           setTimeout(() => flashHome(active!, ab.runs_scored), kickoff + moveMs * 0.7);
+        }
+        // If this is the last at-bat of its half-inning (3 outs / end of
+        // inning), clear the basepaths after the runner motion settles.
+        // Otherwise leftover runners would only clear when the NEXT at-bat
+        // from a different half-inning starts — too late visually.
+        if (isLastOfHalfInning) {
+          const clearAt = kickoff + moveMs + 300;
+          setTimeout(() => {
+            void clearAllRunners(runnersRef.current, 350);
+            lastHalfInningRef.current = null;
+          }, clearAt);
         }
         setTimeout(() => {
           ball.remove();
@@ -800,7 +818,14 @@ export default function Diamond() {
       return;
     }
     const ab = seq[idxRef.current];
-    animateOne(ab);
+    // Is this the last AB of its half-inning? Either there's no next AB, or
+    // the next AB is from a different half-inning (i.e. the inning ended,
+    // typically because of 3 outs).
+    const nextAb = seq[idxRef.current + 1];
+    const isLastOfHalfInning =
+      !nextAb ||
+      (ab.half_inning_id != null && nextAb.half_inning_id !== ab.half_inning_id);
+    animateOne(ab, isLastOfHalfInning);
     setNowCard(
       <div>
         <div className="flex items-center gap-2">
