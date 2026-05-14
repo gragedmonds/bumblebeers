@@ -343,11 +343,11 @@ export default function LineupGrid() {
         {filtered.map((p, idx) => (
           <li
             key={p.key}
-            className={`flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg px-2 py-2 ${
+            className={`flex flex-wrap items-center gap-x-2 gap-y-2 rounded-lg px-2 py-2 sm:gap-x-3 ${
               idx % 2 === 0 ? "bg-white" : "bg-stone-50/50"
             }`}
           >
-            <span className="flex min-w-[6.5rem] items-center gap-1">
+            <span className="flex min-w-[4rem] items-center gap-1 sm:min-w-[6.5rem]">
               <span className="font-semibold text-stone-900">{p.name}</span>
               <button
                 type="button"
@@ -370,7 +370,7 @@ export default function LineupGrid() {
                 </svg>
               </button>
             </span>
-            <div className="flex flex-wrap gap-1">
+            <div className="flex flex-nowrap gap-0.5 sm:flex-wrap sm:gap-1">
               {PILL_ORDER.map((pos) => {
                 const m = getMark(p.key, pos);
                 return (
@@ -379,7 +379,7 @@ export default function LineupGrid() {
                     type="button"
                     onClick={() => cyclePill(p.key, pos)}
                     aria-label={`${p.name} ${pos}: ${m}`}
-                    className={`inline-flex h-8 min-w-[2.25rem] items-center justify-center rounded-full border px-2 text-xs font-semibold tabular-nums transition ${pillClass(
+                    className={`inline-flex h-7 min-w-5 items-center justify-center rounded-full border px-1 text-[10px] font-semibold tabular-nums transition sm:h-8 sm:min-w-[2.25rem] sm:px-2 sm:text-xs ${pillClass(
                       m,
                     )}`}
                   >

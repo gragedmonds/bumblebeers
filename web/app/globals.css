@@ -25,11 +25,12 @@ body {
   font-family: Arial, Helvetica, sans-serif;
 }
 
-/* Very subtle honeycomb pattern — barely visible, gives the app a faint
- * "bees" texture. Tile from heropatterns.com (Steve Schoger / public-domain).
- * Color is amber-600 at ~4% opacity so it reads on the amber-50 page bg. */
+/* Honeycomb "dots": disconnected tiny hexagons on a tight grid. Reads as
+ * a subtle bee-themed dot pattern rather than a continuous honeycomb. Pointy-
+ * top hex, radius ~3.5px, amber-700 fill at ~13% opacity, 22px tile so the
+ * dots are clearly separated. */
 .bg-honeycomb {
   background-image:
-    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='28' height='49' viewBox='0 0 28 49'><g fill='none' fill-rule='evenodd' stroke='%23d97706' stroke-opacity='0.06'><path d='M13.99 9.25l13 7.5v15l-13 7.5L1 31.75v-15l12.99-7.5zM3 17.9v12.7l10.99 6.34 11-6.35V17.9l-11-6.34L3 17.9zM0 15l12.98-7.5V0h-2v6.35L0 12.69v2.3zm0 18.5L12.98 41v8h-2v-6.85L0 35.81v-2.3zM15 0v7.5L27.99 15H28v-2.31h-.01L17 6.35V0h-2zm0 49v-8l12.99-7.5H28v2.31h-.01L17 42.15V49h-2z'/></g></svg>");
+    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='22' height='22' viewBox='0 0 22 22'><polygon points='11,7.5 14.03,9.25 14.03,12.75 11,14.5 7.97,12.75 7.97,9.25' fill='%23b45309' fill-opacity='0.13'/></svg>");
   background-repeat: repeat;
 }
