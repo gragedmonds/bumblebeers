@@ -62,12 +62,41 @@ export interface AtBat {
   half_inning_id: string | null;
 }
 
+/** Authoritative offense totals from GameChanger's /season-stats endpoint
+ *  (NOT the play-by-play). This is the only source of SO / BB / HBP — the
+ *  play-by-play never logs those per-AB. HR totals here are also more
+ *  accurate than the pbp count in older seasons. Present on every season
+ *  that the season-stats endpoint had data for (~123/210 player-seasons). */
+export interface PlayerSeasonStats {
+  PA?: number;
+  AB?: number;
+  H?: number;
+  "1B"?: number;
+  "2B"?: number;
+  "3B"?: number;
+  HR?: number;
+  TB?: number;
+  BB?: number;
+  SO?: number;
+  HBP?: number;
+  SF?: number;
+  FC?: number;
+  ROE?: number;
+  R?: number;
+  RBI?: number;
+  SB?: number;
+  CS?: number;
+  AVG?: number;
+  OB?: number;
+}
+
 export interface PlayerSeason {
   season_year: number;
   PA: number;
   wOBA: number | null;
   BMBL_plus: number | null;
   qualified: boolean;
+  stats?: PlayerSeasonStats;
 }
 
 export interface PlayerGame {

@@ -43,12 +43,54 @@ Static — committed to git, regenerated on each re-scrape.
 ```ts
 {
   season_year: number;       // 2018..2025
-  PA: number;                // plate appearances
+  PA: number;                // plate appearances (from BMBL+ pipeline)
   wOBA: number | null;       // weighted on-base average
   BMBL_plus: number | null;  // composite ranking (100 = team-season avg, 25 = 1 stddev)
   qualified: boolean;        // >= 25 PA for the season
+  stats?: PlayerSeasonStats; // AUTHORITATIVE offense totals — see below
 }
 ```
+
+### `PlayerSeasonStats` — authoritative season totals
+
+Lifted from GameChanger's `/teams/{tid}/season-stats` endpoint (NOT the
+play-by-play). Present on most seasons (~123/210 player-season entries —
+the rest didn't have a season-stats row, typically because the player had
+0 PA).
+
+```ts
+{
+  PA?: number;
+  AB?: number;
+  H?: number;
+  "1B"?: number;
+  "2B"?: number;
+  "3B"?: number;
+  HR?: number;     // TRUE HR count. The play-by-play undercounts HRs in older seasons.
+  TB?: number;
+  BB?: number;     // Walks. NOT recorded per-AB anywhere else.
+  SO?: number;     // Strikeouts. NOT recorded per-AB anywhere else.
+  HBP?: number;    // Hit-by-pitch. NOT recorded per-AB anywhere else.
+  SF?: number;
+  FC?: number;
+  ROE?: number;
+  R?: number;
+  RBI?: number;
+  SB?: number;
+  CS?: number;
+  AVG?: number;
+  OB?: number;
+}
+```
+
+**Why this matters**: the play-by-play stream (and therefore the `at_bats`
+array below) does NOT record strikeouts / walks / HBPs at all. The
+GameChanger scorers only log balls put in play — pitch counts and balls
+called for strikes are not in the source data. This `stats` block is the
+ONLY place those numbers live, and it's per-season-totals-only.
+
+For HR leaderboards: trust `seasons[].stats.HR`, not counts derived from
+`at_bats`. Older seasons especially undercount HRs in the pbp.
 
 ### `PlayerGame`
 

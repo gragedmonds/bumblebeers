@@ -99,7 +99,11 @@ def build_at_bats():
         print(f"WARN: {ATBATS_XLSX} not found; diamond tab will be empty")
         return []
     df = pd.read_excel(ATBATS_XLSX, sheet_name="AtBats")
-    df = df.dropna(subset=["defender_x", "defender_y"])
+    # Previously this dropped rows with NaN defender_x/y, which removed
+    # ~124 home runs (the ball leaves the field, so no fielder coords) and
+    # a handful of other_outs. Those rows ARE real at-bats — keep them.
+    # x/y get coerced to None downstream so the spray chart still skips
+    # them, while every other code path sees the full at-bat log.
     # date_local is stored as UTC; convert to America/Toronto so a doubleheader
     # that runs across midnight UTC still buckets to one local date.
     utc = pd.to_datetime(df["date_local"], utc=True)

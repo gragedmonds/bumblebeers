@@ -30,8 +30,20 @@ from build_rankings_html import (
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 RAW_JSON = os.path.join(HERE, "gamechanger_bumblebeers_raw.json")
+SEASON_STATS_JSON = os.path.join(HERE, "gamechanger_season_stats.json")
 OUT_DIR = os.path.join(HERE, "web", "public", "data")
 OUT = os.path.join(OUT_DIR, "snapshot.json")
+
+# Offense fields we lift from the authoritative season-stats endpoint and
+# bake into snapshot.players[key].seasons[year].stats. These are the only
+# source for strikeouts (SO), walks (BB), and hit-by-pitches (HBP) — the
+# play-by-play stream does NOT record them per-AB; only ball-in-play
+# outcomes get logged. HR totals here are also more accurate than the pbp
+# count in older seasons (see CLAUDE.md "data quirks 3 — play-by-play is
+# incomplete for historical seasons").
+_SEASON_STAT_FIELDS = ["PA", "AB", "H", "1B", "2B", "3B", "HR", "TB",
+                       "BB", "SO", "HBP", "SF", "FC", "ROE", "R", "RBI",
+                       "SB", "CS", "AVG", "OB"]
 
 # Play-result strings that imply the batter ends up at a specific base when not out.
 # Used by the runners-on-base tracker to advance untagged runners on hits.
@@ -326,6 +338,80 @@ def _compute_runners_before(raw, player_id_map):
     return out
 
 
+def _season_year_from_meta(meta: dict) -> int | None:
+    """Pull a season year out of a team_meta block. season_name is shaped
+    like '2025 Summer Bumblebeers' — first integer wins."""
+    for key in ("season_name", "season_year", "name"):
+        v = meta.get(key)
+        if isinstance(v, int):
+            return v
+        if isinstance(v, str):
+            for tok in v.split():
+                if tok.isdigit() and len(tok) == 4:
+                    return int(tok)
+    return None
+
+
+def load_season_stats_by_player_season() -> dict[tuple[str, int], dict]:
+    """Index gamechanger_season_stats.json by (person_key, season_year) →
+    offense stats dict. Pulls only the fields in _SEASON_STAT_FIELDS to
+    keep the snapshot lean."""
+    if not os.path.exists(SEASON_STATS_JSON):
+        print(f"WARN: {SEASON_STATS_JSON} not found; season stats won't enrich players")
+        return {}
+    with open(SEASON_STATS_JSON, "r", encoding="utf-8") as f:
+        ss = json.load(f)
+    out: dict[tuple[str, int], dict] = {}
+    for t in ss.get("teams") or []:
+        meta = t.get("team_meta") or {}
+        season_year = _season_year_from_meta(meta)
+        if season_year is None:
+            continue
+        # Build a player_id → first_name lookup from the team's players array.
+        name_for: dict[str, str] = {}
+        for pp in t.get("players") or []:
+            pid = pp.get("id") or pp.get("person_id")
+            nm = pp.get("first_name") or pp.get("display_name") or ""
+            if pid and nm:
+                name_for[pid] = nm
+        sd = (t.get("season_stats") or {}).get("stats_data") or {}
+        players = sd.get("players") or {}
+        for pid, pdata in players.items():
+            off = ((pdata or {}).get("stats") or {}).get("offense") or {}
+            if not off:
+                continue
+            name = name_for.get(pid) or ""
+            if not name:
+                continue
+            key = pk(name)
+            slim = {f: off[f] for f in _SEASON_STAT_FIELDS if f in off}
+            # If the same (key, season) appears in two team objects (e.g. an
+            # earlier draft + a later one), prefer the one with more PA.
+            existing = out.get((key, season_year))
+            if existing and (existing.get("PA") or 0) >= (slim.get("PA") or 0):
+                continue
+            out[(key, season_year)] = slim
+    return out
+
+
+def enrich_seasons_with_authoritative_stats(
+    by_player: dict, season_stats: dict[tuple[str, int], dict]
+) -> int:
+    """Merge season-stats offense numbers into snapshot.players[key].seasons[N].stats.
+    Returns the number of (player, season) entries enriched."""
+    if not season_stats:
+        return 0
+    n = 0
+    for key, p in by_player.items():
+        for s in p.get("seasons") or []:
+            year = s.get("season_year")
+            entry = season_stats.get((key, year))
+            if entry:
+                s["stats"] = entry
+                n += 1
+    return n
+
+
 def scrub(o):
     """Recursively replace NaN/Inf with None so the JSON is pure (no bare NaN tokens)."""
     if isinstance(o, float):
@@ -344,6 +430,14 @@ def main():
     by_player = build_players_map(bundle)
     career_weighted = {pk(c["display_name"]): c for c in bundle["career_weighted"]}
     at_bats = build_at_bats()
+
+    # Enrich seasons with authoritative offense totals from the season-stats
+    # endpoint. THIS is the only source of strikeouts / walks / HBPs since the
+    # play-by-play doesn't log them per-AB. Also corrects HR undercount in
+    # older seasons (the pbp stream lost a chunk of older home runs).
+    season_stats = load_season_stats_by_player_season()
+    enriched = enrich_seasons_with_authoritative_stats(by_player, season_stats)
+    print(f"season-stats: enriched {enriched} player-season entries with offense totals")
 
     # Phase 3 / 3.5 enrichment: walk the raw play stream once to compute
     # per-transaction base state (before + after), the explicit runner moves
