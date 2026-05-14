@@ -27,12 +27,13 @@ body {
   isolation: isolate;
 }
 
-/* Honeycomb "dots": small isolated hexagons that fade from a strong centre
- * out to transparent at the edges. Mimics Claude Code's welcome-screen dot
- * pattern (vignette fade) but with hex tiles instead of circles. Pointy-top
- * hex, radius ~3.5px, amber-700 fill at 40% opacity; the radial mask is what
- * keeps the pattern from feeling like wallpaper. Lives on body::before so
- * the mask doesn't apply to the page content above it. */
+/* Honeycomb "dots": small isolated HOLLOW hexagons that fade from a strong
+ * centre out to transparent at the edges. Mimics Claude Code's welcome-screen
+ * dot pattern (vignette fade) but with hex outlines instead of circles.
+ * Pointy-top hex, radius ~5.25px, amber-700 stroke at 20% opacity, 33px
+ * tile so the outlines are clearly separated. The radial mask is what keeps
+ * the pattern from feeling like wallpaper. Lives on body::before so the
+ * mask doesn't apply to page content above it. */
 body::before {
   content: "";
   position: fixed;
@@ -40,7 +41,7 @@ body::before {
   z-index: -1;
   pointer-events: none;
   background-image:
-    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='22' height='22' viewBox='0 0 22 22'><polygon points='11,7.5 14.03,9.25 14.03,12.75 11,14.5 7.97,12.75 7.97,9.25' fill='%23b45309' fill-opacity='0.40'/></svg>");
+    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='33' height='33' viewBox='0 0 33 33'><polygon points='16.5,11.25 21.05,13.88 21.05,19.12 16.5,21.75 11.95,19.12 11.95,13.88' fill='none' stroke='%23b45309' stroke-opacity='0.20' stroke-width='1'/></svg>");
   background-repeat: repeat;
   -webkit-mask-image: radial-gradient(
     ellipse 65% 55% at 50% 38%,
