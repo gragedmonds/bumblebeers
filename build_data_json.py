@@ -102,12 +102,21 @@ def _extract_play_result(event_data: dict) -> str | None:
 
 
 def _walk_lineup_subs(event_data: dict):
-    """Yield (sub_code, sub_attrs) for each fill_lineup_index / goto_lineup_index
-    that lives nested inside a lineup-update transaction's events array.
+    """Yield (sub_code, sub_attrs) for every lineup-state event nested
+    inside a lineup-update transaction. Includes fill_lineup (mass fills
+    without an explicit slot index) and sub_players because at game start
+    the roster is often built via these alongside fill_lineup_index.
     """
     for sub in event_data.get("events") or []:
         code = sub.get("code")
-        if code in ("fill_lineup_index", "goto_lineup_index"):
+        if code in (
+            "fill_lineup_index",
+            "fill_lineup",
+            "goto_lineup_index",
+            "sub_players",
+            "clear_lineup_index",
+            "clear_entire_lineup",
+        ):
             yield code, sub.get("attributes") or {}
 
 
@@ -454,10 +463,37 @@ def _compute_runners_before(raw, player_id_map):
                     tid = apply_fill(attrs)
                     if tid:
                         current_offense_team = tid
+                elif code == "fill_lineup":
+                    tid = attrs.get("teamId")
+                    pid = attrs.get("playerId")
+                    if tid and pid:
+                        used = set(lineup_slot[tid].keys())
+                        next_i = 0
+                        while next_i in used:
+                            next_i += 1
+                        lineup_slot[tid][next_i] = pid
+                        current_offense_team = tid
                 elif code == "goto_lineup_index":
                     tid = apply_goto(attrs)
                     if tid:
                         current_offense_team = tid
+                elif code == "sub_players":
+                    tid = attrs.get("teamId")
+                    out_pid = attrs.get("outgoingPlayerId")
+                    in_pid = attrs.get("incomingPlayerId")
+                    if tid and out_pid and in_pid:
+                        for ix, opid in list(lineup_slot[tid].items()):
+                            if opid == out_pid:
+                                lineup_slot[tid][ix] = in_pid
+                elif code == "clear_lineup_index":
+                    tid = attrs.get("teamId")
+                    i = attrs.get("index")
+                    if tid and isinstance(i, int) and i in lineup_slot[tid]:
+                        del lineup_slot[tid][i]
+                elif code == "clear_entire_lineup":
+                    tid = attrs.get("teamId")
+                    if tid:
+                        lineup_slot[tid].clear()
                 elif code == "pitch":
                     r = attrs.get("result") or ""
                     if r in _PITCH_BALL:
@@ -530,10 +566,37 @@ def _compute_runners_before(raw, player_id_map):
                                 tid = apply_fill(sub_attrs)
                                 if tid:
                                     current_offense_team = tid
+                            elif sub_code == "fill_lineup":
+                                tid = sub_attrs.get("teamId")
+                                pid = sub_attrs.get("playerId")
+                                if tid and pid:
+                                    used = set(lineup_slot[tid].keys())
+                                    next_i = 0
+                                    while next_i in used:
+                                        next_i += 1
+                                    lineup_slot[tid][next_i] = pid
+                                    current_offense_team = tid
                             elif sub_code == "goto_lineup_index":
                                 tid = apply_goto(sub_attrs)
                                 if tid:
                                     current_offense_team = tid
+                            elif sub_code == "sub_players":
+                                tid = sub_attrs.get("teamId")
+                                out_pid = sub_attrs.get("outgoingPlayerId")
+                                in_pid = sub_attrs.get("incomingPlayerId")
+                                if tid and out_pid and in_pid:
+                                    for ix, opid in list(lineup_slot[tid].items()):
+                                        if opid == out_pid:
+                                            lineup_slot[tid][ix] = in_pid
+                            elif sub_code == "clear_lineup_index":
+                                tid = sub_attrs.get("teamId")
+                                i = sub_attrs.get("index")
+                                if tid and isinstance(i, int) and i in lineup_slot[tid]:
+                                    del lineup_slot[tid][i]
+                            elif sub_code == "clear_entire_lineup":
+                                tid = sub_attrs.get("teamId")
+                                if tid:
+                                    lineup_slot[tid].clear()
                 elif code == "base_running":
                     if last_tx_seq is not None:
                         pending_brs.append(attrs)
