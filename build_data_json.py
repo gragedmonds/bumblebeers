@@ -343,6 +343,28 @@ def _compute_runners_before(raw, player_id_map):
                         return tid
                 return None
 
+            def pick_batter(bat_tid: str | None) -> str | None:
+                """Look up the current batter, skipping over any slot whose
+                player is currently on a base (real-life lineup passes over
+                runners on base). Also advances lineup_idx past the skipped
+                slots so subsequent calls don't repeat the same batter."""
+                if not bat_tid or bat_tid not in lineup_slot:
+                    return None
+                slots = lineup_slot[bat_tid]
+                if not slots:
+                    return None
+                size = max(len(slots), 1)
+                on_base = {rid for rid in bases.values() if rid}
+                start_ix = lineup_idx.get(bat_tid, 0)
+                for offset in range(size):
+                    ix = (start_ix + offset) % size
+                    pid = slots.get(ix)
+                    if pid and pid not in on_base:
+                        lineup_idx[bat_tid] = ix
+                        return pid
+                # Fallback: lineup entirely on base (impossible but defensive).
+                return slots.get(start_ix % size)
+
             def fire_walk(pitch_seq: int) -> None:
                 """A 4th ball just landed. Place batter on 1B, advance forced
                 runners. Emit a synthetic AB if BMBL is on offense, plus a
@@ -350,12 +372,7 @@ def _compute_runners_before(raw, player_id_map):
                 """
                 nonlocal bases
                 bat_tid = batting_tid()
-                batter_id: str | None = None
-                if bat_tid and bat_tid in lineup_slot:
-                    slots = lineup_slot[bat_tid]
-                    ix = lineup_idx.get(bat_tid, 0)
-                    if slots:
-                        batter_id = slots.get(ix) or slots.get(ix % max(len(slots), 1))
+                batter_id = pick_batter(bat_tid)
                 # Force-advance: walk fills bases in order. 1B fills with
                 # batter; runner on 1B forced to 2B if 1B was occupied; ditto
                 # 2B→3B, 3B→home.
@@ -430,12 +447,7 @@ def _compute_runners_before(raw, player_id_map):
                 nonlocal outs
                 flush_pending()
                 bat_tid = batting_tid()
-                batter_id: str | None = None
-                if bat_tid and bat_tid in lineup_slot:
-                    slots = lineup_slot[bat_tid]
-                    ix = lineup_idx.get(bat_tid, 0)
-                    if slots:
-                        batter_id = slots.get(ix) or slots.get(ix % max(len(slots), 1))
+                batter_id = pick_batter(bat_tid)
                 if bmbl_offense:
                     out[(eid, pitch_seq)] = {
                         "before": {str(b): player_id_map.get(bases[b]) if bases[b] else None for b in (1, 2, 3)},
@@ -546,17 +558,11 @@ def _compute_runners_before(raw, player_id_map):
                         # REAL at-bat. Finalize any prior runner motion, then snapshot.
                         flush_pending()
                         # Identify the batter via the offense team's lineup
-                        # pointer. The pointer is advanced explicitly per AB
-                        # below (mirroring build_excel.GameState.register_at_bat)
-                        # because GameChanger's `goto_lineup_index` events fire
-                        # only sporadically (~5% of ABs).
+                        # pointer, skipping past any slot whose player is
+                        # currently on a base. The pointer is advanced
+                        # explicitly per AB below.
                         bat_tid = batting_tid()
-                        batter_id = None
-                        if bat_tid and bat_tid in lineup_slot:
-                            slots = lineup_slot[bat_tid]
-                            ix = lineup_idx.get(bat_tid, 0)
-                            size = max(len(slots), 1)
-                            batter_id = slots.get(ix) or slots.get(ix % size)
+                        batter_id = pick_batter(bat_tid)
                         out[(eid, seq)] = {
                             "before": {
                                 "1": player_id_map.get(bases[1]) if bases[1] else None,
