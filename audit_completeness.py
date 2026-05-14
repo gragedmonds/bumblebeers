@@ -149,42 +149,44 @@ def main():
         print(f"{r:<35} {a:>6} {b:>6} {c:>6} {miss:>8}")
     print()
 
-    # ---------- 5. Per-season HR cross-check -----------------------------
-    if season_stats:
-        print("=" * 70)
-        print("Per-season HR cross-check (SEASON_STATS = authoritative)")
-        print("=" * 70)
-        # snap → group HRs by season + player
-        snap_hr_by_season_player: dict[tuple[int, str], int] = defaultdict(int)
-        for ab in snap["at_bats"]:
-            if ab.get("result") == "home_run":
-                snap_hr_by_season_player[(ab["season_year"], ab.get("batter") or "?")] += 1
-        # season_stats — find per-player HR
-        # Structure: list of season records keyed by display_name + season_year
-        truth_hr_by_season_player: dict[tuple[int, str], int] = defaultdict(int)
-        for rec in season_stats if isinstance(season_stats, list) else season_stats.get("stats", []):
-            try:
-                yr = int(rec.get("season_year") or 0)
-                name = rec.get("display_name") or "?"
-                hr = int(rec.get("HR") or rec.get("hr") or 0)
-                if hr > 0:
-                    truth_hr_by_season_player[(yr, name)] += hr
-            except (ValueError, TypeError):
+    # ---------- 5. Per-season cross-check: at-bat counts vs SEASON_STATS truth -----
+    # The snapshot already has the authoritative stats baked in under
+    # `players[key].seasons[i].stats`. Use those as ground truth and compare
+    # against what we counted from the at-bats list.
+    print("=" * 70)
+    print("Per-season cross-check: PBP counts vs authoritative SEASON_STATS")
+    print("=" * 70)
+    pbp_by_season: dict[int, Counter] = defaultdict(Counter)
+    for ab in snap["at_bats"]:
+        yr = ab.get("season_year") or 0
+        r = ab.get("result")
+        if r == "home_run":
+            pbp_by_season[yr]["HR"] += 1
+        if r in {"single", "double", "triple", "home_run"}:
+            pbp_by_season[yr]["H"] += 1
+            pbp_by_season[yr][{"single": "1B", "double": "2B", "triple": "3B", "home_run": "HR"}[r]] += 1
+    truth_by_season: dict[int, Counter] = defaultdict(Counter)
+    for key, p in snap["players"].items():
+        for s in p.get("seasons") or []:
+            yr = s.get("season_year")
+            stats = s.get("stats") or {}
+            if not stats:
                 continue
-        # Total per season
-        truth_total_by_season: Counter = Counter()
-        for (yr, _), n in truth_hr_by_season_player.items():
-            truth_total_by_season[yr] += n
-        snap_total_by_season: Counter = Counter()
-        for (yr, _), n in snap_hr_by_season_player.items():
-            snap_total_by_season[yr] += n
-        all_years = sorted(set(truth_total_by_season) | set(snap_total_by_season))
-        print(f"{'SEASON':<8} {'SNAPSHOT_HR':>12} {'TRUTH_HR':>10} {'GAP':>6}")
-        print("-" * 40)
-        for yr in all_years:
-            s = snap_total_by_season.get(yr, 0)
-            t = truth_total_by_season.get(yr, 0)
-            print(f"{yr:<8} {s:>12} {t:>10} {t - s:>+6}")
+            for k in ("PA", "AB", "H", "1B", "2B", "3B", "HR", "SO", "BB", "HBP", "RBI"):
+                truth_by_season[yr][k] += int(stats.get(k) or 0)
+    all_years = sorted(set(pbp_by_season) | set(truth_by_season))
+    print(f"{'SEASON':<8} {'PBP_H':>6} {'TRUE_H':>7} {'GAP_H':>6}   {'PBP_HR':>7} {'TRUE_HR':>8} {'GAP':>5}   {'TRUE_SO':>8} {'TRUE_BB':>8}")
+    print("-" * 90)
+    for yr in all_years:
+        if yr == 0:
+            continue
+        p_h = pbp_by_season[yr]["H"]
+        t_h = truth_by_season[yr]["H"]
+        p_hr = pbp_by_season[yr]["HR"]
+        t_hr = truth_by_season[yr]["HR"]
+        t_so = truth_by_season[yr]["SO"]
+        t_bb = truth_by_season[yr]["BB"]
+        print(f"{yr:<8} {p_h:>6} {t_h:>7} {t_h - p_h:>+6}   {p_hr:>7} {t_hr:>8} {t_hr - p_hr:>+5}   {t_so:>8} {t_bb:>8}")
     print()
 
     # ---------- 6. Per-season transactions missing from snapshot ---------
