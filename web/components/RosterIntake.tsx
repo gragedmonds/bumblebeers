@@ -178,7 +178,7 @@ export default function RosterIntake() {
           disabled={!file || submitting}
           className="min-h-11 rounded-md bg-amber-700 px-5 py-2 text-sm font-semibold text-white hover:bg-amber-800 disabled:opacity-50"
         >
-          {submitting ? "Asking the Bee…" : "Parse with Claude"}
+          {submitting ? "Bee's buzzing…" : "Parse with Claude"}
         </button>
         {result || error ? (
           <button

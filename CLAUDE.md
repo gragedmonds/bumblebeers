@@ -1,58 +1,67 @@
-# Bumblebeers — GameChanger stats project
+# Bumblebeers — adult slo-pitch analytics + planning
 
-Adult slo-pitch softball team's statistical analytics pipeline. Scrapes GameChanger
-(no public API), produces an Excel workbook and a single-file interactive HTML
-viewer with three tabs: **Trends**, **Diamond** (animated spray chart), and
-**🍺 MVP** (per-night Tall-Can-recipient picker).
+The Bumblebeers are an adult slo-pitch softball team in Whitby, Ontario. This
+repo contains:
 
-## Quick orientation
+1. **A Python data pipeline** that scrapes the team's GameChanger account and
+   produces stat aggregates, BMBL+ composite rankings, and a snapshot JSON
+   payload.
+2. **A Next.js 16 web app** (`web/`) deployed to Vercel that presents the
+   stats with five surfaces: a season-trends chart, an animated spray-chart
+   "Diamond", a Tall-Can MVP picker, a per-player position-preference grid +
+   per-night lineup builder, and a floating "Ask Beeves" chat that answers
+   natural-language questions over the data via the Claude API.
 
-| File | Purpose |
+Public GitHub: <https://github.com/gragedmonds/bumblebeers>.
+Deployed via Vercel (root: `web/`). Auto-deploys on push to `main`.
+
+---
+
+## Top-level orientation
+
+| File / dir | Purpose |
 |---|---|
 | `gamechanger_bumblebeers_raw.json` | Raw scrape: every team, every game, every event (~14 MB) |
 | `gamechanger_season_stats.json` | Per-team season-stats blob from `/teams/{id}/season-stats` |
-| `bumblebeers_gamechanger.xlsx` | Multi-sheet workbook: Teams / Schedule / Players / AtBats / Pitches / BaseRunning / PlaysRaw / Errors |
-| `bumblebeers_rankings.xlsx` | BMBL+ score workbook: Summary / Components / YearByYear / Career_Weighted / Career_Totals / Reconciliation / PerGame / Weights / RawStats |
-| `bumblebeers_rankings.html` | Single-file interactive viewer with 3 tabs. Double-click to open. |
-| `BMBL_PLUS_PROPOSAL.md` | Design doc for the composite ranking |
-| `build_excel.py` | Raw JSON → `bumblebeers_gamechanger.xlsx` |
-| `build_rankings.py` | `gamechanger_season_stats.json` + AtBats → `bumblebeers_rankings.xlsx` + `_pergame.json` |
-| `build_rankings_html.py` | `_pergame.json` + raw JSON + AtBats → `bumblebeers_rankings.html` |
-| `viewer_template.html` | The HTML/CSS/JS template. **Has a known truncation hazard — see below.** |
-| `_smoke_stub.js` / `_smoke_stub_bottom.js` | DOM stubs for the JS validation step |
-| `_pergame.json` | Intermediate — bridge between `build_rankings.py` and the HTML builder |
+| `build_excel.py` | Raw JSON → `bumblebeers_gamechanger.xlsx` (Teams / Schedule / Players / AtBats / Pitches / BaseRunning / PlaysRaw / Errors) |
+| `build_rankings.py` | `gamechanger_season_stats.json` + AtBats → `bumblebeers_rankings.xlsx` + `_pergame.json` (BMBL+ scores + per-game wOBA + career rollups) |
+| `build_data_json.py` | `_pergame.json` + raw JSON + AtBats → `web/public/data/snapshot.json` (the payload the web app fetches). Replaces the legacy HTML emitter for the production deliverable. |
+| `build_rankings_html.py` | **LEGACY** — the original single-file HTML viewer baker. Still importable (`build_data_json.py` reuses its `build_at_bats`, `build_mvp_nights`, `build_players_map`, `pk` helpers). The HTML output (`bumblebeers_rankings.html`) is no longer the production UI. |
+| `viewer_template.html` | **LEGACY** — template for the old HTML viewer. Untouched in active dev. |
+| `_pergame.json` | Build artifact bridging `build_rankings.py` → `build_data_json.py`. |
+| `bumblebeers_*.xlsx` | Build artifacts. The web app does NOT read these — it reads `snapshot.json` only. |
+| `BMBL_PLUS_PROPOSAL.md` | Design doc for the composite ranking formula. |
+| `web/` | The Next.js 16 app. See [web/CLAUDE.md](web/CLAUDE.md). |
+| `docs/DATA_SHAPES.md` | Persisted Redis schemas + snapshot.json shape reference. |
+| `docs/CLAUDE_INTEGRATIONS.md` | The three Claude API touchpoints (Beeves chat, attendance OCR, lineup suggest), prompt-caching strategy, cost notes. |
 
-## Build pipeline
+## End-to-end build pipeline
 
 ```bash
-# 1. Raw JSON → workbook (only needed when re-scraping or fixing aggregation)
+# 1. (One-time per re-scrape) raw JSON → workbook
 python build_excel.py
 
 # 2. Compute BMBL+ scores + per-game wOBA + career rollups
 python build_rankings.py
 
-# 3. Bake the interactive viewer (includes a hard JS validation step)
-python build_rankings_html.py
+# 3. Emit web/public/data/snapshot.json (the production payload)
+python build_data_json.py
 ```
 
-`build_rankings_html.py` runs both `node --check` (syntax) and a smoke-execution
-with stubbed DOM (`document`, `window`, `Option`, `Chart`, etc.) that explicitly
-calls `initDiamond()`, `initMvp()`, and `renderMvpList()`. **It refuses to write
-the HTML if any check fails**, so the page can't silently hang in the browser.
+Pipeline output the web app actually consumes: **only** `web/public/data/snapshot.json`. Commit and push it; Vercel auto-deploys.
+
+The legacy `python build_rankings_html.py` step still works (writes `bumblebeers_rankings.html`) but the web app has replaced it as the primary deliverable.
 
 ## Re-scraping new games
 
 GameChanger has no public API. To re-scrape after a new game:
 
-1. Open `https://web.gc.com/teams/3nf5uPush7Ix/2025-summer-bumblebeers/schedule`
-   in Chrome while signed in as `gregedmonds@gmail.com`.
+1. Open `https://web.gc.com/teams/3nf5uPush7Ix/2025-summer-bumblebeers/schedule` in Chrome while signed in as `gregedmonds@gmail.com`.
 2. Click into any game and visit its Plays tab — that primes the auth header.
-3. Paste the scraper JS (see `BMBL_PLUS_PROPOSAL.md` history and the original
-   `gamechanger_bumblebeers_raw.json` generation flow in the chat transcript).
+3. Paste the scraper JS (see commit history; the scraper hits `api.team-manager.gc.com` with `gc-token` / `gc-device-id` / `gc-app-name` headers).
 4. Drop the downloaded JSON in this folder, then run the build pipeline above.
 
-The scraper hits these endpoints with `gc-token` / `gc-device-id` / `gc-app-name`
-headers (no Authorization, no cookies). API host: `api.team-manager.gc.com`.
+API host: `api.team-manager.gc.com`. Endpoints used:
 
 | Endpoint | Used for |
 |---|---|
@@ -62,16 +71,13 @@ headers (no Authorization, no cookies). API host: `api.team-manager.gc.com`.
 | `GET /teams/{tid}/schedule` | All events (games) |
 | `GET /teams/{tid}/season-stats` | **Per-season per-player offense stats — authoritative for HR/RBI** |
 | `GET /teams/{tid}/game-summaries` | Per-game score totals |
-| `GET /teams/{tid}/opponent/{oid}` | Opponent metadata |
-| `GET /events/{eid}/best-game-stream-id` | Resolves an event → game-stream uuid |
-| `GET /game-streams/{gsid}/events` | The play-by-play event log |
+| `GET /events/{eid}/best-game-stream-id` | Resolves event → game-stream uuid |
+| `GET /game-streams/{gsid}/events` | Play-by-play event log |
 
 ## Data quirks (gotchas)
 
 ### 1. GameChanger creates a fresh `player_id` per team-season.
-Greg's 2018 and 2025 records have different IDs. Use lower-case `display_name`
-(first name) as the canonical `person_key`. Three manual aliases live in both
-`build_rankings.py` and `build_rankings_html.py`:
+Greg's 2018 and 2025 records have different IDs. Use lower-case `display_name` (first name) as the canonical `person_key`. Three manual aliases live in both `build_rankings.py` and `build_rankings_html.py`:
 
 ```python
 NAME_ALIASES = {
@@ -83,9 +89,7 @@ NAME_ALIASES = {
 ```
 
 ### 2. Dates are stored as UTC.
-A doubleheader played 7:30 PM + 9 PM EDT crosses midnight UTC and ends up on
-two different `date_only` values. The MVP tab buckets by **America/Toronto**
-local date to keep both games of a night together:
+A doubleheader played 7:30 PM + 9:15 PM EDT crosses midnight UTC and ends up on two different `date_only` values. The MVP tab buckets by **America/Toronto** local date to keep both games of a night together:
 
 ```python
 utc = pd.to_datetime(df["date_local"], utc=True)
@@ -93,159 +97,88 @@ df["date_only"] = utc.dt.tz_convert("America/Toronto").dt.date.astype(str)
 ```
 
 ### 3. The play-by-play is *incomplete* for historical seasons.
-Cross-checking against the authoritative `/season-stats` endpoint shows the
-play-by-play undercount HRs significantly in older seasons:
+Cross-checking against the authoritative `/season-stats` endpoint shows the play-by-play undercounts HRs significantly in older seasons:
 - 2018 Jeff: 9 truth HR vs 1 in pbp
 - 2022 Sean: 14 truth HR vs 1 in pbp
 - 2024 Sean: 11 truth HR vs 3 in pbp
 
-Scorers often shorthanded older games. **Use `gamechanger_season_stats.json`
-as the authoritative source for season totals.** The MVP tab uses pbp for
-per-night detail (since season-stats only has totals) — note the limitation.
+Scorers often shorthanded older games. **Use `gamechanger_season_stats.json` as the authoritative source for season totals.** MVP-night data uses pbp (since season-stats only has totals) — note the limitation.
 
 ### 4. Scoring runners are TOP-LEVEL `base_running` events, not nested.
-Critical for RBI counting. Scorers tag runners crossing home as separate
-top-level events with `playType="advanced_on_last_play"` and `base=4`,
-**right after** the transaction. There are 751 of these top-level events
-versus only 153 inside transactions — so `build_rankings_html.py` walks the
-raw play stream and attributes each scoring base_running to the most recent
-transaction in the same half-inning.
-
-```python
-for p in plays:                          # sorted by sequence_number
-    if code == "transaction": last_tx_seq = p["sequence_number"]
-    elif code == "base_running" and attrs.get("base") == 4:
-        # attribute to last_tx_seq
-    elif code == "end_half": last_tx_seq = None
-```
+Critical for RBI counting. Scorers tag runners crossing home as separate top-level events with `playType="advanced_on_last_play"` and `base=4`, **right after** the transaction. The data pipeline walks the raw play stream and attributes each scoring base_running to the most recent transaction in the same half-inning.
 
 ### 5. BMBL inning numbering is best-effort.
-GameChanger's `end_half` events fire only on manual scorekeeper actions, not
-automatically at 3 outs. A 3-out fallback inside `build_excel.py`'s `GameState`
-class handles missing transitions but can drift on partially-scored games.
-The `bmbl_frame` column on the AtBats sheet is "Bumblebeers offensive frame
-N" rather than the real inning number on the GC website.
+GameChanger's `end_half` events fire only on manual scorekeeper actions, not automatically at 3 outs. A 3-out fallback inside `build_excel.py`'s `GameState` class handles missing transitions but can drift on partially-scored games. The `bmbl_frame` column on the AtBats sheet is "Bumblebeers offensive frame N" rather than the real inning number on the GC website.
 
 ### 6. Greg only tracks Bumblebeers offense.
-Opposing-team at-bats are NOT recorded in our scraper output (intentional —
-makes inning-tracking cleaner). The play-by-play includes opposing-team
-transactions but we ignore them in derived sheets.
+Opposing-team at-bats are NOT recorded in our scraper output (intentional — makes inning-tracking cleaner). The play-by-play includes opposing-team transactions but we ignore them in derived sheets.
 
-## Viewer template quirk — read this before editing the HTML
+### 7. Phase 3 runner state (Phase 3.5 enrichment).
+Each at-bat in `snapshot.json` carries:
+- `runners_before` / `runners_after` — base-state snapshots `{1, 2, 3}` of runner names
+- `runner_moves` — explicit `{name, from, to}` transitions (`from: 0` = batter; `to: 4` = scored; `to: "out"` = put out)
+- `half_inning_id` — groups consecutive at-bats in the same half-inning, used by the Diamond playback to know when to reset/seed
 
-`viewer_template.html` gets its tail silently truncated by external tooling
-on large edits. **Do not put critical code at the end of the template.**
+100% coverage on the snapshots; ~54% have explicit `runner_moves` (improves in newer seasons).
 
-`build_rankings_html.py` defends against this with two patterns:
+---
 
-1. **Strip-and-replace**: it finds `function animateAtBat(ab) {` in the
-   template, truncates everything from that line onward, then injects a
-   canonical `ANIMATE_AT_BAT_TAIL` Python constant containing the rest of
-   the JS (Diamond animation, MVP tab logic, init wiring, closing tags).
-2. **JS validation**: `node --check` + a stubbed-DOM smoke-execution. The
-   build refuses to write `bumblebeers_rankings.html` if anything fails.
+## The web app
 
-If you must add JS that goes at the end of the file, **add it to the
-`ANIMATE_AT_BAT_TAIL` Python constant** in `build_rankings_html.py`, not the
-template. The template should only carry HTML structure + CSS + the JS that
-sits before `function animateAtBat`.
+See [web/CLAUDE.md](web/CLAUDE.md) for the full brief. TL;DR:
 
-## Architecture decisions
+- **Routes:** `/lineup` (default home in nav order) → can-play/should-play pill grid + upcoming games + team-wide free-text notes. `/lineup/[YYYY-MM-DD]` → attendance editor (with poll-screenshot OCR) + Smart-fill lineup builder. `/` → Trends. `/diamond` → animated spray chart. `/mvp` → Tall-Can picker. **No `/ask` page** — Beeves is a floating chat widget on every page.
+- **API:** `GET/PUT /api/lineup`, `GET/PUT /api/night/[date]`, `POST /api/attendance/parse`, `POST /api/lineup/suggest`, `GET /api/schedule`, `POST /api/ask` (SSE-streamed).
+- **Storage:** Upstash Redis (managed via Vercel integration). Two keys: `bumblebeers:lineup` (shared can/should grid + roster overrides + team notes) and `bumblebeers:night:YYYY-MM-DD` (per-night attendance + game lineups).
+- **Auto-save** everywhere — no Save buttons. 700ms debounce.
+- **Claude integrations** — three touchpoints, all using Sonnet 4.6 with prompt caching. See `docs/CLAUDE_INTEGRATIONS.md`.
 
-### Why vanilla HTML + Chart.js, not React/Next/Vite?
-The deliverable is a file that Greg double-clicks on Windows. No build step,
-no node server, no npm install. Data is embedded as a JS literal so the page
-works offline. **If we outgrow this** (multi-user, complex interactivity,
-mobile-first), the natural next step is **Vite + a tiny React app** — the
-data can become a JSON sibling file and most of the existing JS port over
-cleanly.
+## Environment variables (Vercel)
 
-### BMBL+ score formula
-```
-BMBL+ = 100 + 25 × Σ (weight_i × z_score_i)
-```
+| Var | Used for |
+|---|---|
+| `ANTHROPIC_API_KEY` | Beeves chat, attendance OCR, lineup suggest |
+| `KV_REST_API_URL` + `KV_REST_API_TOKEN` | Upstash Redis (set automatically by the Vercel integration) |
 
-| Tier | Component | Weight |
-|---|---|---:|
-| Production | wOBA (linear weights, shrunk to season mean k=50) | 40% |
-| Power | ISO = SLG − AVG | 10% |
-| Clutch | RISP_diff (BA/RISP − AVG) | 10% |
-| Clutch | 2-out RBI rate | 8% |
-| Clutch | Productive-out rate (SF + SHB)/PA | 7% |
-| Discipline | K avoidance (1 − SO/PA) | 5% |
-| Discipline | BB rate | 5% |
-| Discipline | QAB% | 5% |
-| Contact | Hard contact % | 6% |
-| Contact | Line drive % | 4% |
+When `ANTHROPIC_API_KEY` is missing, the AI routes return 503 with a friendly error. When the KV env is missing, the lineup/night routes return an empty payload with `x-bb-storage: unconfigured` so the UI degrades gracefully.
 
-100 = team-season average, 1 stddev = 25 points. Min 25 PA to qualify.
-Bayesian shrinkage on wOBA only.
+## Deploy + workflow
 
-### MVP-night score formula
-```
-score = TB×1.5 + runs_scored×1.2 + HR×1.5 + XBH×0.8 + SF×0.5 − outs×0.4
-```
-Min 2 PAs for MVP eligibility. Tied scores break on TB then H.
+- Push to `main` → Vercel auto-deploys.
+- Re-scrape workflow: run the 3 Python scripts → `git commit web/public/data/snapshot.json && git push`.
+- No CI yet. Vercel runs `npm run build` itself (Turbopack, ~5s).
 
-The "justification" auto-text branches on margin %:
-- `>=40%`: "X (line) — clear-cut night."
-- `10-40%`: "X (line) edged Y (line) on {differentiator}."
-- `<10%`: "Tight race — X (line) over Y (line) on {differentiator}."
+## Common operations
 
-Differentiator priority: HR > XBH > TB > runs_scored > H > fewer-outs.
+### Editing the can/should grid
+`/lineup` → tap pills to cycle grey (none) → amber (can) → green (should) → grey. Saves automatically. The grid uses the active-roster filter (current season + ≥25 career PA, with manual `archived` / `added` overrides). Tiny chevron-down next to each name archives them; an "Add player" form below the grid pins new entries.
 
-## Next-step ideas (in priority order)
+### Planning a night
+`/lineup/[YYYY-MM-DD]` (or tap a card on `/lineup`). Mark attendees via IN/OUT toggles, OR upload a poll screenshot — Claude reads the names, matches to roster, populates the status map. Then "🐝 Generate both games" fires two Claude calls in sequence (game 1, then game 2 with game 1 passed as `prior_game` context so rotation notes resolve). 9 attendees → 9-player alignment (one CF). 10+ → 10-player alignment.
 
-1. **Box score endpoint** — find the per-game per-player stats endpoint so we
-   get authoritative HR/RBI per game (not season totals). The web UI's Box
-   Score tab probably calls something like `/events/{eid}/box-score` or
-   pulls from a Sabertooth processing endpoint. Greg is logged in now — open
-   any game's Box Score tab and capture the network requests.
+### Asking questions
+Tap the floating 🐝 button on any page. Beeves answers from the data baked into a cached system prompt. Tables for leaderboards, bolded numbers for single-stat asks.
 
-2. **Calibrate slo-pitch wOBA weights from our data**. Linear-regress
-   half-inning runs against event counts on ~5,000 BMBL at-bats. The current
-   weights are baseball-derived (BB=0.69, 1B=0.88, etc.).
+## Next-step ideas
 
-3. **Close-game leverage index**. Use `override` score events to tag each
-   at-bat with a leverage value, then build a Clutch+ sub-score that's
-   stricter than just RISP.
+In rough priority:
 
-4. **xWOBA / expected-stats** from fielder x,y coordinates. We have defender
-   position for every at-bat in `AtBats` — train an xWOBA model where each
-   point is "where did the ball land + what happened to it".
+1. **Box-score endpoint discovery** — find the per-game per-player stats endpoint so HR/RBI per game becomes authoritative (not just season totals). Open any GameChanger game's Box Score tab while logged in; capture the network request.
+2. **Tighten `runner_moves` coverage in older seasons** — the play-by-play tracker fills in 54% explicitly today. The remaining at-bats use a heuristic; making the heuristic better is straightforward.
+3. **Calibrate slo-pitch wOBA weights from our data** — linear-regress half-inning runs against event counts on ~5,000 BMBL at-bats. Current weights are baseball-derived.
+4. **Close-game leverage index** — tag each at-bat with a leverage value, then build a Clutch+ sub-score stricter than just RISP.
+5. **xWOBA / expected-stats from fielder x,y coordinates** — train an xWOBA model where each point is "where did the ball land + what happened to it".
+6. **Pitcher / defense splits** — currently only Bumblebeers offense is tracked. Adding opposing-team frames unlocks "when do we give up the most runs" / "who's hot against us".
+7. **Head-to-head views** — filter Trends and Diamond by a specific opponent.
+8. **Daily auto-update via GitHub Action** — wrap the scraper as a Python+Playwright script, run on cron, push the regenerated snapshot.
+9. **Beeves tool-use mode** — when a question needs the per-at-bat raw data (currently excluded from the cached payload for cost), give Claude a `query_atbats(filter, group_by, metric)` tool.
 
-5. **Pitcher / defense splits**. Currently we only track Bumblebeers offense.
-   Adding the opposing-team frames would let us see when our team gives up
-   the most runs, who's hot against us, etc.
+## Style + workflow notes for future Claude sessions
 
-6. **Head-to-head views**. Filter to a specific opponent (e.g., career stats
-   vs Mets) for both Trends and Diamond tabs.
-
-7. **Age curve / multi-year projection**. With 7 seasons per regular, we can
-   fit a simple aging curve and project next season's BMBL+.
-
-8. **Daily auto-update**. Currently re-scraping requires a manual JS paste.
-   Wrap the scraper as a Python+Playwright script that signs in, captures
-   token, and pulls. Could schedule via Windows Task Scheduler.
-
-## Open work when this session ends
-
-- ✅ RBI attribution from top-level base_running events — **just fixed**
-- ⏳ HR undercounting in older seasons — needs box-score endpoint OR
-     heuristic apportionment from season totals
-- ⏳ The 4 "questionable name pairs" got resolved (Alex+Tosun merged,
-     Brandon-Porco+Porco merged, z.Terence+Terence merged, Chris USPL kept
-     separate). Same aliases live in both `build_rankings.py` and
-     `build_rankings_html.py` — keep them in sync if you add new ones.
-
-## Test the build
-
-```bash
-python build_rankings.py        # rebuild scores
-python build_rankings_html.py   # rebuild HTML; fails loudly if JS is broken
-# Expected end-of-output: "JS check passed. wrote ... (~2.4 MB, ~5240 at-bats, 114 MVP nights)"
-```
-
-If the JS validator complains, **don't ship**. Read the error, fix the
-issue, and rebuild. The validator is your first line of defense against
-"page loads but nothing's clickable" hangs.
+- **The deliverable is the web app.** When the user asks for a feature, default to the Next.js side; the Python pipeline only changes when new data fields are needed.
+- **Snapshots are produced by Python, consumed by TypeScript.** If a new field is needed, add it in `build_data_json.py`, add the type in `web/lib/data.ts`, then use it.
+- **Auto-save is the convention.** Don't add Save buttons.
+- **The roster is filtered, not enumerated.** Helpers in `web/lib/data.ts`: `getActiveRoster` (auto-rule), `applyRosterOverrides` (auto-rule + manual archived/added).
+- **Three Claude calls, three caching strategies** — see `docs/CLAUDE_INTEGRATIONS.md`.
+- **Greg prefers terse responses + concrete file paths in chat.** No "let me know if you want me to do X" — propose, then do.
+- **Stay on Sonnet 4.6 unless the user explicitly says "use Opus".** Deep Mode is intentionally not exposed.

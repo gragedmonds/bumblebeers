@@ -137,7 +137,7 @@ export default function AttendanceEditor({
 
       <div className="flex flex-wrap items-center gap-2">
         <label className="min-h-11 inline-flex cursor-pointer items-center gap-2 rounded-md border border-stone-300 bg-white px-3 py-2 text-sm hover:bg-stone-100">
-          {busy ? "Parsing…" : "Upload poll screenshot"}
+          {busy ? "Bee's buzzing…" : "Upload poll screenshot"}
           <input
             type="file"
             accept="image/png,image/jpeg,image/webp,image/gif"

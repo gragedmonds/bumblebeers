@@ -7,6 +7,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 interface Turn {
   id: string;
@@ -297,10 +298,12 @@ export default function AskBeeves() {
                     <p className="whitespace-pre-wrap">{t.content}</p>
                   ) : t.content ? (
                     <div className="text-[13px] text-stone-800">
-                      <ReactMarkdown components={MD_COMPONENTS}>{t.content}</ReactMarkdown>
+                      <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>
+                        {t.content}
+                      </ReactMarkdown>
                     </div>
                   ) : (
-                    <p className="italic text-stone-500">Thinking…</p>
+                    <p className="italic text-stone-500">Bee&apos;s buzzing…</p>
                   )}
                   {t.meta && t.content && (
                     <div className="mt-1 border-t border-stone-200 pt-1 text-[10px] text-stone-400">
@@ -352,7 +355,7 @@ export default function AskBeeves() {
               disabled={!draft.trim() || busy}
               className="rounded-md bg-amber-700 px-3 py-2 text-sm font-semibold text-white hover:bg-amber-800 disabled:opacity-50"
             >
-              {busy ? "…" : "Send"}
+              {busy ? "Bzzz…" : "Send"}
             </button>
           </form>
         </div>
