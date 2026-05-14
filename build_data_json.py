@@ -195,7 +195,7 @@ def _compute_runners_before(raw, player_id_map):
                 """Apply pending base_running events + play-result heuristic to bases.
                 Also computes the `moves` and `after` snapshot for the most-recent
                 transaction (last_tx_seq) and stitches them back into `out`."""
-                nonlocal bases
+                nonlocal bases, last_tx_seq, last_tx_result, last_tx_batter
                 if last_tx_seq is None:
                     pending_brs.clear()
                     return
@@ -275,6 +275,13 @@ def _compute_runners_before(raw, player_id_map):
 
                 bases = next_bases
                 pending_brs.clear()
+                # Idempotency: clear last_tx_* so a subsequent flush_pending
+                # call (e.g. from fire_walk/fire_strikeout before the next
+                # real transaction sets these fresh) doesn't re-place the
+                # batter on a base that already reflects them.
+                last_tx_seq = None
+                last_tx_result = None
+                last_tx_batter = None
 
             # Track lineup state per team so we can identify the batter at each
             # at-bat. GameChanger uses `fill_lineup_index` (slot assignments) and
