@@ -181,19 +181,47 @@ export default function LineupBuilder({
     [activeGame, ensured, onChange],
   );
 
-  const handleSuggest = useCallback(() => {
-    const next = ensureTwoGames(ensured);
-    next[activeGame] = suggestFill(game, attending, prefs, positions);
-    onChange(next);
-  }, [activeGame, attending, ensured, game, onChange, prefs, positions]);
-
   const handleClearGame = useCallback(() => {
     const next = ensureTwoGames(ensured);
     next[activeGame] = { innings: Array.from({ length: 8 }, () => ({} as InningLineup)) };
     onChange(next);
   }, [activeGame, ensured, onChange]);
 
-  const handleSmartFill = useCallback(async () => {
+  const handleClearBoth = useCallback(() => {
+    const next = ensureTwoGames(ensured);
+    next[0] = { innings: Array.from({ length: 8 }, () => ({} as InningLineup)) };
+    next[1] = { innings: Array.from({ length: 8 }, () => ({} as InningLineup)) };
+    onChange(next);
+  }, [ensured, onChange]);
+
+  async function callSuggest(
+    payload: Record<string, unknown>,
+  ): Promise<SuggestResponse> {
+    const r = await fetch("/api/lineup/suggest", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const json = (await r.json()) as SuggestResponse;
+    if (!r.ok || json.error) {
+      const friendly =
+        json.error === "anthropic_not_configured"
+          ? "Claude API key not set — add ANTHROPIC_API_KEY in Vercel to use Smart fill."
+          : json.error === "need_at_least_9_attendees"
+            ? `Need at least 9 attendees in the In bucket (have ${json.count}).`
+            : json.detail || json.error || `HTTP ${r.status}`;
+      throw new Error(friendly);
+    }
+    if (!json.innings || json.innings.length !== 8) {
+      throw new Error("Claude returned an unexpected shape.");
+    }
+    return json;
+  }
+
+  // Generate both games in one click. Game 1 fires first; game 2 sees game 1's
+  // assignments via `prior_game` so notes like "rotate pitchers next game"
+  // resolve correctly.
+  const handleGenerateBoth = useCallback(async () => {
     setSmartBusy(true);
     setSmartErr(null);
     setSmartResult(null);
@@ -201,41 +229,50 @@ export default function LineupBuilder({
       const attendees = attending
         .map((k) => ({ key: k, name: rosterByKey.get(k)?.display_name ?? k }))
         .filter((p) => p.name);
-      const payload = {
+      const sharedBase = {
         attendees,
         prefs: prefs.matrix,
         team_notes: prefs.team_notes ?? "",
-        game_num: activeGame + 1,
         opponent: opponent ?? undefined,
         mode,
-        // Pass existing assignments so Claude doesn't overwrite locked cells.
-        existing: game.innings,
       };
-      const r = await fetch("/api/lineup/suggest", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(payload),
+
+      // Game 1 — empty `existing` so Claude has free rein.
+      const g1 = await callSuggest({
+        ...sharedBase,
+        game_num: 1,
+        existing: ensured[0].innings,
       });
-      const json = (await r.json()) as SuggestResponse;
-      if (!r.ok || json.error) {
-        const friendly =
-          json.error === "anthropic_not_configured"
-            ? "Claude API key not set — add ANTHROPIC_API_KEY in Vercel to use Smart fill."
-            : json.error === "need_at_least_9_attendees"
-              ? `Need at least 9 attendees in the In bucket (have ${json.count}).`
-              : json.detail || json.error || `HTTP ${r.status}`;
-        throw new Error(friendly);
-      }
-      if (!json.innings || json.innings.length !== 8) {
-        throw new Error("Claude returned an unexpected shape.");
-      }
+
+      // Game 2 — pass game 1's result so "rotate next game" can take effect.
+      const g2 = await callSuggest({
+        ...sharedBase,
+        game_num: 2,
+        prior_game: g1.innings,
+        existing: ensured[1].innings,
+      });
+
       const next = ensureTwoGames(ensured);
-      next[activeGame] = { innings: json.innings };
+      next[0] = { innings: g1.innings! };
+      next[1] = { innings: g2.innings! };
       onChange(next);
+
+      // Merge usage across the two calls so cost is visible.
+      const usage = g1.usage && g2.usage
+        ? {
+            input: g1.usage.input + g2.usage.input,
+            output: g1.usage.output + g2.usage.output,
+            cache_creation: g1.usage.cache_creation + g2.usage.cache_creation,
+            cache_read: g1.usage.cache_read + g2.usage.cache_read,
+          }
+        : (g1.usage ?? g2.usage);
       setSmartResult({
-        explanation: json.explanation ?? "",
-        model: json.model ?? "",
-        usage: json.usage,
+        explanation: [g1.explanation, g2.explanation]
+          .filter((s) => s && s.trim())
+          .map((s, i) => `Game ${i + 1}: ${s}`)
+          .join("\n"),
+        model: g1.model ?? g2.model ?? "",
+        usage,
         gameIdx: activeGame,
       });
     } catch (e) {
@@ -243,7 +280,7 @@ export default function LineupBuilder({
     } finally {
       setSmartBusy(false);
     }
-  }, [activeGame, attending, ensured, game.innings, mode, onChange, opponent, prefs.matrix, prefs.team_notes, rosterByKey]);
+  }, [attending, ensured, mode, onChange, opponent, prefs.matrix, prefs.team_notes, rosterByKey, activeGame]);
 
   if (attending.length === 0) {
     return (
@@ -286,32 +323,26 @@ export default function LineupBuilder({
       <div className="flex flex-wrap gap-2 text-sm">
         <button
           type="button"
-          onClick={handleSuggest}
-          className="min-h-11 rounded-md bg-amber-100 px-4 py-2 font-semibold text-amber-900 hover:bg-amber-200"
-        >
-          Suggest fill (Game {activeGame + 1})
-        </button>
-        <button
-          type="button"
-          onClick={handleSmartFill}
+          onClick={handleGenerateBoth}
           disabled={smartBusy || attending.length < 9}
-          title="Claude reads the team notes and assigns 8 innings respecting your rules"
+          title="Claude reads the team notes and assigns 8 innings respecting your rules — both games at once"
           className="min-h-11 rounded-md bg-amber-700 px-4 py-2 font-semibold text-white hover:bg-amber-800 disabled:opacity-50"
         >
-          {smartBusy ? "Claude thinking…" : `🐝 Smart fill (Game ${activeGame + 1})`}
+          {smartBusy ? "Claude thinking…" : "🐝 Generate both games"}
         </button>
-        <span className="self-center text-xs text-stone-500">
-          {mode === "nine"
-            ? `9-player mode (one CF) — ${attending.length} in`
-            : `10-player mode — ${attending.length} in`}
-        </span>
         <button
           type="button"
-          onClick={handleClearGame}
-          className="min-h-11 rounded-md border border-stone-300 px-3 py-2 hover:bg-stone-100"
+          onClick={handleClearBoth}
+          disabled={smartBusy}
+          className="min-h-11 rounded-md border border-stone-300 px-3 py-2 hover:bg-stone-100 disabled:opacity-50"
         >
-          Clear Game {activeGame + 1}
+          Clear both
         </button>
+        <span className="ml-auto self-center text-xs text-stone-500">
+          {mode === "nine"
+            ? `9-player mode · one CF · ${attending.length} in`
+            : `10-player mode · ${attending.length} in`}
+        </span>
       </div>
 
       {smartErr && (
@@ -319,9 +350,9 @@ export default function LineupBuilder({
           {smartErr}
         </div>
       )}
-      {smartResult && smartResult.gameIdx === activeGame && (
+      {smartResult && (
         <div className="rounded-md border border-amber-200 bg-amber-50/70 px-3 py-2 text-sm text-stone-800">
-          <div className="font-semibold text-amber-900">Smart fill applied 🐝</div>
+          <div className="font-semibold text-amber-900">Both games generated 🐝</div>
           {smartResult.explanation && (
             <p className="mt-1 whitespace-pre-wrap">{smartResult.explanation}</p>
           )}

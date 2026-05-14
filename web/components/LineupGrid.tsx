@@ -341,7 +341,29 @@ export default function LineupGrid() {
               idx % 2 === 0 ? "bg-white" : "bg-stone-50/50"
             }`}
           >
-            <span className="min-w-[6.5rem] font-semibold text-stone-900">{p.name}</span>
+            <span className="flex min-w-[6.5rem] items-center gap-1">
+              <span className="font-semibold text-stone-900">{p.name}</span>
+              <button
+                type="button"
+                onClick={() => archivePlayer(p.key)}
+                title={`Archive ${p.name}`}
+                aria-label={`Archive ${p.name}`}
+                className="inline-flex h-5 w-5 items-center justify-center rounded-full text-stone-300 transition hover:bg-stone-100 hover:text-stone-700"
+              >
+                <svg
+                  viewBox="0 0 12 12"
+                  aria-hidden
+                  className="h-3 w-3"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.6"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="M3 4.5l3 3 3-3" />
+                </svg>
+              </button>
+            </span>
             <div className="flex flex-wrap gap-1">
               {PILL_ORDER.map((pos) => {
                 const m = getMark(p.key, pos);
@@ -360,14 +382,6 @@ export default function LineupGrid() {
                 );
               })}
             </div>
-            <button
-              type="button"
-              onClick={() => archivePlayer(p.key)}
-              title={`Archive ${p.name}`}
-              className="ml-auto min-h-9 rounded-md border border-stone-300 bg-white px-2 py-1 text-xs text-stone-600 hover:border-amber-400 hover:bg-amber-50 hover:text-amber-800"
-            >
-              Archive
-            </button>
           </li>
         ))}
         {filtered.length === 0 && (

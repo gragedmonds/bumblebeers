@@ -38,6 +38,9 @@ interface SuggestBody {
   opponent?: string;
   mode?: LineupMode;
   existing?: InningLineup[];
+  /** When generating game 2, pass game 1's assignments so notes like
+   * "rotate next game" can take effect. */
+  prior_game?: InningLineup[];
 }
 
 const INSTRUCTIONS_BASE = `You are filling a slo-pitch softball lineup card for an 8-inning game.
@@ -99,6 +102,7 @@ export async function POST(req: Request) {
         : "nine";
   const positions = POSITIONS_BY_MODE[mode];
   const existing = Array.isArray(body.existing) ? body.existing : null;
+  const priorGame = Array.isArray(body.prior_game) ? body.prior_game : null;
 
   // Build a per-attendee summary so the model sees exactly who's available
   // and which positions each one can / should play. Only emit preferences
@@ -126,6 +130,20 @@ export async function POST(req: Request) {
         .join("\n")
     : "";
 
+  // When the caller is generating game 2 of a doubleheader, show Claude
+  // what already happened in game 1 — that's what makes notes like
+  // "rotate pitchers next game" or "split catchers between the two games"
+  // actionable.
+  const priorBlock = priorGame
+    ? "\nGame 1 already filled (use to apply rotation/sharing notes for this game 2):\n" +
+      priorGame
+        .map((row, i) => {
+          const cells = positions.map((p) => row[p] ? `${p}=${row[p]}` : null).filter(Boolean);
+          return `  Inning ${i + 1}: ${cells.length ? cells.join(", ") : "(empty)"}`;
+        })
+        .join("\n")
+    : "";
+
   const positionList = positions
     .map((p) => `${p}${mode === "nine" && p === "LCF" ? " (centerfield — one CF in 9-player mode)" : ""}`)
     .join(", ");
@@ -144,7 +162,7 @@ ${attendeeBlock}
 Team notes:
 """
 ${teamNotes || "(none — apply soft rules and spread innings evenly)"}
-"""${existingBlock}
+"""${priorBlock}${existingBlock}
 
 Generate the 8-inning lineup now. Every output inning object must have exactly these keys: ${positions.join(", ")}.`;
 
