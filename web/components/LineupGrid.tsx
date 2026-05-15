@@ -4,12 +4,13 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useSnapshot } from "@/lib/useSnapshot";
 import {
   EMPTY_LINEUP,
+  type Hand,
   type Lineup,
   type Mark,
   type Pos,
   POSITIONS,
 } from "@/lib/lineup";
-import { applyRosterOverrides, getActiveRoster, slugifyKey } from "@/lib/data";
+import { applyRosterOverrides, getActiveRoster, latestSeason, slugifyKey } from "@/lib/data";
 
 const MARK_CYCLE: Record<Mark, Mark> = {
   none: "can",
@@ -124,6 +125,12 @@ export default function LineupGrid() {
           team_notes: typeof body.team_notes === "string" ? body.team_notes : "",
           archived: Array.isArray(body.archived) ? body.archived : [],
           added: Array.isArray(body.added) ? body.added : [],
+          handedness:
+            body.handedness && typeof body.handedness === "object" ? body.handedness : {},
+          beers_by_season:
+            body.beers_by_season && typeof body.beers_by_season === "object"
+              ? body.beers_by_season
+              : {},
           updated_at: body.updated_at ?? "",
         });
         setLoaded(true);
@@ -229,6 +236,44 @@ export default function LineupGrid() {
     setDirty(true);
     setSaveMsg(null);
     setLineup((prev) => ({ ...prev, team_notes: val }));
+  }
+
+  function setHand(key: string, side: "bat" | "throw", next: Hand | null) {
+    markDirty();
+    setLineup((prev) => {
+      const handedness = { ...(prev.handedness ?? {}) };
+      const cur = { ...(handedness[key] ?? {}) };
+      if (next === null) delete cur[side];
+      else cur[side] = next;
+      if (!cur.bat && !cur.throw) delete handedness[key];
+      else handedness[key] = cur;
+      return { ...prev, handedness };
+    });
+  }
+
+  // Latest tracked season — drives which year the beer toggle scopes to.
+  const currentSeason = useMemo(
+    () => (snapshot ? String(latestSeason(snapshot)) : ""),
+    [snapshot],
+  );
+
+  function toggleBeer(key: string) {
+    if (!currentSeason) return;
+    markDirty();
+    setLineup((prev) => {
+      const map = { ...(prev.beers_by_season ?? {}) };
+      const cur = new Set(map[currentSeason] ?? []);
+      if (cur.has(key)) cur.delete(key);
+      else cur.add(key);
+      if (cur.size === 0) delete map[currentSeason];
+      else map[currentSeason] = [...cur];
+      return { ...prev, beers_by_season: map };
+    });
+  }
+
+  function hasBrought(key: string): boolean {
+    if (!currentSeason) return false;
+    return (lineup.beers_by_season?.[currentSeason] ?? []).includes(key);
   }
 
   // Auto-save: debounce 700ms after any change. Uses a ref to the latest
@@ -369,6 +414,23 @@ export default function LineupGrid() {
                   <path d="M3 4.5l3 3 3-3" />
                 </svg>
               </button>
+              <button
+                type="button"
+                onClick={() => toggleBeer(p.key)}
+                title={
+                  hasBrought(p.key)
+                    ? `${p.name} has brought beer/snacks for ${currentSeason}. Tap to undo.`
+                    : `Mark ${p.name} as having brought beer/snacks for ${currentSeason}.`
+                }
+                aria-label={`Beer/snacks brought ${currentSeason}: ${hasBrought(p.key) ? "yes" : "no"}`}
+                className={`inline-flex h-6 w-6 items-center justify-center rounded-full text-base leading-none transition ${
+                  hasBrought(p.key)
+                    ? "opacity-100 hover:scale-110"
+                    : "opacity-25 grayscale hover:opacity-60"
+                }`}
+              >
+                <span aria-hidden>🍺</span>
+              </button>
             </span>
             <div className="flex flex-nowrap gap-0.5 sm:flex-wrap sm:gap-1">
               {PILL_ORDER.map((pos) => {
@@ -388,6 +450,16 @@ export default function LineupGrid() {
                 );
               })}
             </div>
+            <HandPair
+              label="Bat"
+              value={lineup.handedness?.[p.key]?.bat ?? null}
+              onChange={(v) => setHand(p.key, "bat", v)}
+            />
+            <HandPair
+              label="Thr"
+              value={lineup.handedness?.[p.key]?.throw ?? null}
+              onChange={(v) => setHand(p.key, "throw", v)}
+            />
           </li>
         ))}
         {filtered.length === 0 && (
@@ -460,6 +532,46 @@ export default function LineupGrid() {
         {" "}{activePlayers.length} active · {archivedPlayers.length} archived.
       </p>
     </div>
+  );
+}
+
+function HandPair({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: Hand | null;
+  onChange: (next: Hand | null) => void;
+}) {
+  const cls = (active: boolean) =>
+    `inline-flex h-7 w-6 items-center justify-center border text-[10px] font-bold tabular-nums transition sm:h-8 sm:w-7 sm:text-xs ${
+      active
+        ? "bg-amber-700 text-white border-amber-800"
+        : "bg-white text-stone-500 border-stone-300 hover:bg-stone-100"
+    }`;
+  return (
+    <span className="flex items-center gap-0.5">
+      <span className="text-[10px] uppercase tracking-wide text-stone-400">{label}</span>
+      <button
+        type="button"
+        onClick={() => onChange(value === "L" ? null : "L")}
+        aria-label={`${label} left`}
+        aria-pressed={value === "L"}
+        className={`${cls(value === "L")} rounded-l-md`}
+      >
+        L
+      </button>
+      <button
+        type="button"
+        onClick={() => onChange(value === "R" ? null : "R")}
+        aria-label={`${label} right`}
+        aria-pressed={value === "R"}
+        className={`${cls(value === "R")} -ml-px rounded-r-md`}
+      >
+        R
+      </button>
+    </span>
   );
 }
 

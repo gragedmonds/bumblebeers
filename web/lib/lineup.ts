@@ -41,6 +41,15 @@ export function modeForAttendeeCount(count: number): LineupMode {
 
 export type Mark = "none" | "can" | "should";
 
+export type Hand = "L" | "R";
+
+/** Per-player handedness. Either field optional — bat-only is a common case
+ * (you usually know how someone bats long before you've seen them throw). */
+export interface Handedness {
+  bat?: Hand;
+  throw?: Hand;
+}
+
 export interface Lineup {
   // matrix[person_key][position] = mark. Missing keys default to "none".
   matrix: Record<string, Partial<Record<Pos, Mark>>>;
@@ -57,6 +66,13 @@ export interface Lineup {
   //             player who isn't in the snapshot yet.
   archived: string[];
   added: { key: string; display_name: string }[];
+  // Per-person handedness. Missing key = unknown. Drives the Pulled / Oppo
+  // chips on /diamond and any future spray-aware analytics.
+  handedness: Record<string, Handedness>;
+  // Per-season set of person_keys who've brought beer/snacks. Keyed by
+  // season-year string ("2026"), so the indicator resets automatically
+  // when the latestSeason in the snapshot rolls over.
+  beers_by_season: Record<string, string[]>;
   // ISO-8601 timestamp of the most recent successful PUT.
   updated_at: string;
 }
@@ -66,6 +82,8 @@ export const EMPTY_LINEUP: Lineup = {
   team_notes: "",
   archived: [],
   added: [],
+  handedness: {},
+  beers_by_season: {},
   updated_at: "",
 };
 
@@ -100,12 +118,18 @@ export function isValidPos(v: unknown): v is Pos {
  * positions and marks are dropped silently; notes are coerced to strings
  * and trimmed.
  */
+function isHand(v: unknown): v is Hand {
+  return v === "L" || v === "R";
+}
+
 export function sanitizeLineup(input: unknown): Lineup {
   const out: Lineup = {
     matrix: {},
     team_notes: "",
     archived: [],
     added: [],
+    handedness: {},
+    beers_by_season: {},
     updated_at: new Date().toISOString(),
   };
   if (!input || typeof input !== "object") return out;
@@ -160,6 +184,37 @@ export function sanitizeLineup(input: unknown): Lineup {
       seen.add(key);
       out.added.push({ key, display_name: name });
       if (out.added.length >= 100) break;
+    }
+  }
+  // handedness: only L/R values per side; drop anything else; entries with
+  // no valid side at all are skipped.
+  if (obj.handedness && typeof obj.handedness === "object") {
+    for (const [pk, raw] of Object.entries(obj.handedness as Record<string, unknown>)) {
+      if (!pk || !raw || typeof raw !== "object") continue;
+      const rec = raw as Record<string, unknown>;
+      const h: Handedness = {};
+      if (isHand(rec.bat)) h.bat = rec.bat;
+      if (isHand(rec.throw)) h.throw = rec.throw;
+      if (h.bat || h.throw) out.handedness[pk] = h;
+    }
+  }
+  // beers_by_season: only year-string keys, only string person_keys, dedupe.
+  if (obj.beers_by_season && typeof obj.beers_by_season === "object") {
+    for (const [year, raw] of Object.entries(
+      obj.beers_by_season as Record<string, unknown>,
+    )) {
+      if (!/^\d{4}$/.test(year)) continue;
+      if (!Array.isArray(raw)) continue;
+      const seen = new Set<string>();
+      const list: string[] = [];
+      for (const v of raw) {
+        const s = typeof v === "string" ? v.trim() : "";
+        if (!s || seen.has(s)) continue;
+        seen.add(s);
+        list.push(s);
+        if (list.length >= 100) break;
+      }
+      if (list.length) out.beers_by_season[year] = list;
     }
   }
   return out;

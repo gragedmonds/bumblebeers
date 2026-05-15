@@ -87,13 +87,24 @@ export default function NightPlanner({ date }: { date: string }) {
         else setNight(emptyNight(date));
         if (nightJson.error === "upstash_not_configured") setStorageOk(false);
         if (prefsJson) {
+          const pj = prefsJson as Lineup & {
+            handedness?: unknown;
+            beers_by_season?: unknown;
+          };
           setPrefs({
-            matrix: prefsJson.matrix ?? {},
-            team_notes:
-              typeof prefsJson.team_notes === "string" ? prefsJson.team_notes : "",
-            archived: Array.isArray(prefsJson.archived) ? prefsJson.archived : [],
-            added: Array.isArray(prefsJson.added) ? prefsJson.added : [],
-            updated_at: prefsJson.updated_at ?? "",
+            matrix: pj.matrix ?? {},
+            team_notes: typeof pj.team_notes === "string" ? pj.team_notes : "",
+            archived: Array.isArray(pj.archived) ? pj.archived : [],
+            added: Array.isArray(pj.added) ? pj.added : [],
+            handedness:
+              pj.handedness && typeof pj.handedness === "object"
+                ? (pj.handedness as Lineup["handedness"])
+                : {},
+            beers_by_season:
+              pj.beers_by_season && typeof pj.beers_by_season === "object"
+                ? (pj.beers_by_season as Lineup["beers_by_season"])
+                : {},
+            updated_at: pj.updated_at ?? "",
           });
         }
         const match = schedJson.nights?.find((n) => n.date === date) ?? null;

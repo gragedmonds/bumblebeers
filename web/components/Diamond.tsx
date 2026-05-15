@@ -249,15 +249,10 @@ function seedRunnersFromSnapshot(
   }
 }
 
-// Per-batter handedness. Keys are person_key (lowercase first name). Default
-// is "R" for anyone not listed — fill these in with actual values to make
-// the Pulled / Pushed (oppo) chips trustworthy. Switch hitters can use "S"
-// (treated as righty for spray classification today).
-const HANDEDNESS: Record<string, "L" | "R" | "S"> = {
-  // TODO Greg: confirm these and add the rest of the active roster.
-  // greg: "R",
-  // sean: "L",
-};
+// Per-batter handedness map. Loaded at runtime from /api/lineup so it
+// stays in sync with what Greg sets on the Lineup page. Anyone not in
+// the map defaults to "R" for spray classification.
+type HandednessMap = Record<string, "L" | "R">;
 
 /** Derived per-AB context. Computed once over the whole at-bat list (not
  * the filtered sequence) so chips and tooltips reflect what was actually
@@ -320,7 +315,7 @@ function parseFrame(halfInningId: string | null): number {
  *   2. Group by event_id (game), find the last AB of each game, mark it
  *      as walk_off if it scored a run.
  * O(n log n) one-time cost — re-runs only when snapshot.at_bats changes. */
-function decorateAtBats(atbats: AtBat[]): DecoratedAtBat[] {
+function decorateAtBats(atbats: AtBat[], handedness: HandednessMap = {}): DecoratedAtBat[] {
   const outsBefore = new Map<AtBat, 0 | 1 | 2 | 3>();
   const halfRuns = new Map<string, number>();
 
@@ -384,7 +379,7 @@ function decorateAtBats(atbats: AtBat[]): DecoratedAtBat[] {
         (m.to as number) > (m.from as number),
     );
     const productive_out = isOut && ((ab.runs_scored ?? 0) > 0 || advanced);
-    const handed = HANDEDNESS[ab.person_key] ?? "R";
+    const handed = handedness[ab.person_key] ?? "R";
     const side = ab.field_side;
     let spray: AtBatDerived["spray"];
     if (side === "middle") spray = "middle";
@@ -684,12 +679,41 @@ function fadeMarker(
 
 export default function Diamond() {
   const { snapshot, error } = useSnapshot();
+  // Pull the handedness map from the shared lineup blob so the Pulled /
+  // Pushed chips reflect what Greg has set on /lineup. Best-effort — if
+  // /api/lineup is down, defaults make everyone righty.
+  const [handedness, setHandedness] = useState<HandednessMap>({});
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await fetch("/api/lineup", { cache: "no-store" });
+        if (!r.ok) return;
+        const json = (await r.json()) as {
+          handedness?: Record<string, { bat?: unknown }>;
+        };
+        if (cancelled || !json.handedness) return;
+        const map: HandednessMap = {};
+        for (const [k, v] of Object.entries(json.handedness)) {
+          const bat = v?.bat;
+          if (bat === "L" || bat === "R") map[k] = bat;
+        }
+        setHandedness(map);
+      } catch {
+        // ignore
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // Decorate every AB once with situational context (outs, bases, frame,
   // big-inning, walk-off, spray side relative to handedness). Used by both
   // the chip-highlight system and the hover tooltip.
   const atbats = useMemo<DecoratedAtBat[]>(
-    () => decorateAtBats(snapshot?.at_bats ?? []),
-    [snapshot],
+    () => decorateAtBats(snapshot?.at_bats ?? [], handedness),
+    [snapshot, handedness],
   );
 
   const [mode, setMode] = useState<Mode>("career");
