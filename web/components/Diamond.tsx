@@ -30,16 +30,32 @@ const BASE_POINT: Record<0 | 1 | 2 | 3 | 4, { x: number; y: number }> = {
 const DUGOUT_POINT = { x: -60, y: 400 };
 
 /** One runner currently sitting on the diamond. Lives in the persistent base
- * layer across consecutive at-bats in the same half-inning. */
+ * layer across consecutive at-bats in the same half-inning.
+ *
+ * `genId` is the cancellation token. Any pending tween / fade captures the
+ * current value at start; on every animation frame it re-checks against the
+ * runner's live `genId` and bails if they don't match. New operations on the
+ * same runner (a fresh tween, a hard-wipe, or a same-inning reconciliation
+ * relocate) bump `genId`, which retires every pending animation that was
+ * targeting this runner. Without this, fast playback (speed < tween
+ * duration) used to leave runners stranded mid-base because two tweens
+ * would race on the same DOM nodes. */
 interface RunnerSquare {
   name: string;
   base: 0 | 1 | 2 | 3; // last known stationary base
   rect: SVGRectElement;
   label: SVGTextElement;
+  genId: number;
 }
 
 const RUNNER_SQUARE_SIZE = 18;
 const RUNNER_HALF = RUNNER_SQUARE_SIZE / 2;
+// Below this speed (s/play) we skip the runner-motion tweens entirely and
+// snap squares directly to their target bases. The tween itself is ~450ms,
+// so anything faster than ~0.5 s/play won't have time to render meaningful
+// motion before the next AB cancels it — and the cancelled-mid-flight
+// state was the source of the "stuck runner" bug Greg saw at fast speeds.
+const TWEEN_MIN_SPEED = 0.5;
 
 function runnerKey(name: string): string {
   // First-name-collision risk for our small team is low; if it becomes one,
@@ -81,15 +97,38 @@ function createRunnerSquare(
   label.textContent = name;
   layer.appendChild(label);
 
-  return { name, base, rect, label };
+  return { name, base, rect, label, genId: 0 };
 }
 
-/** Single-segment tween from runner's current position to a target point. */
+/** Snap a runner directly to a base, no animation. Used at fast playback
+ * speeds and when reconciliation finds a runner on the wrong base. Bumps
+ * genId so any pending tween for this runner aborts on its next frame. */
+function snapRunnerTo(runner: RunnerSquare, base: 0 | 1 | 2 | 3) {
+  runner.genId++;
+  const { x, y } = BASE_POINT[base];
+  const labelOffsetY = base === 2 ? -14 : 18;
+  runner.rect.setAttribute("x", String(x - RUNNER_HALF));
+  runner.rect.setAttribute("y", String(y - RUNNER_HALF));
+  runner.label.setAttribute("x", String(x));
+  runner.label.setAttribute("y", String(y + labelOffsetY));
+  runner.base = base;
+}
+
+/** Synchronously tear down a runner's DOM + retire any in-flight tween. */
+function killRunner(runner: RunnerSquare) {
+  runner.genId++;
+  runner.rect.remove();
+  runner.label.remove();
+}
+
+/** Single-segment tween. Captures `gen` at start; bails on any frame where
+ * the runner's live genId no longer matches. */
 function tweenRunnerToPoint(
   runner: RunnerSquare,
   target: { x: number; y: number },
   labelOffsetY: number,
   ms: number,
+  gen: number,
 ): Promise<void> {
   return new Promise((resolve) => {
     const start = performance.now();
@@ -98,6 +137,10 @@ function tweenRunnerToPoint(
     const fromLblY = parseFloat(runner.label.getAttribute("y") || "0");
     const targetLblY = target.y + labelOffsetY;
     function frame(now: number) {
+      if (runner.genId !== gen) {
+        resolve();
+        return;
+      }
       const t = Math.min(1, (now - start) / ms);
       const ease = 1 - Math.pow(1 - t, 2);
       const x = fromX + (target.x - fromX) * ease;
@@ -124,7 +167,7 @@ async function tweenRunner(
   toBase: 1 | 2 | 3 | 4,
   totalMs: number,
 ): Promise<void> {
-  // Build the chronological path through intermediate bases.
+  const gen = ++runner.genId;
   const path: (1 | 2 | 3 | 4)[] = [];
   for (let b = fromBase + 1; b <= toBase; b++) {
     path.push(b as 1 | 2 | 3 | 4);
@@ -132,9 +175,10 @@ async function tweenRunner(
   if (path.length === 0) return;
   const segmentMs = Math.max(80, Math.floor(totalMs / path.length));
   for (const seg of path) {
+    if (runner.genId !== gen) return;
     const target = BASE_POINT[seg];
     const offset = seg === 2 ? -14 : 18;
-    await tweenRunnerToPoint(runner, target, offset, segmentMs);
+    await tweenRunnerToPoint(runner, target, offset, segmentMs, gen);
   }
 }
 
@@ -143,17 +187,30 @@ async function tweenRunnerToDugout(
   runner: RunnerSquare,
   totalMs: number,
 ): Promise<void> {
-  await tweenRunnerToPoint(runner, DUGOUT_POINT, 18, totalMs);
-  await fadeAndRemoveRunner(runner, 250);
+  const gen = ++runner.genId;
+  await tweenRunnerToPoint(runner, DUGOUT_POINT, 18, totalMs, gen);
+  if (runner.genId !== gen) return;
+  await fadeAndRemoveRunner(runner, 250, gen);
 }
 
-/** Fade a runner's rect + label to zero opacity and remove from DOM. */
-function fadeAndRemoveRunner(runner: RunnerSquare, ms: number): Promise<void> {
+/** Fade a runner's rect + label to zero opacity and remove from DOM.
+ * If a `gen` is supplied, fade aborts (without removing) when superseded;
+ * if not, takes ownership by bumping a fresh gen of its own. */
+function fadeAndRemoveRunner(
+  runner: RunnerSquare,
+  ms: number,
+  gen?: number,
+): Promise<void> {
+  const myGen = gen ?? ++runner.genId;
   return new Promise((resolve) => {
     const start = performance.now();
     const fromR = parseFloat(runner.rect.getAttribute("opacity") || "1");
     const fromL = parseFloat(runner.label.getAttribute("opacity") || "1");
     function frame(now: number) {
+      if (runner.genId !== myGen) {
+        resolve();
+        return;
+      }
       const t = Math.min(1, (now - start) / ms);
       runner.rect.setAttribute("opacity", String(fromR * (1 - t)));
       runner.label.setAttribute("opacity", String(fromL * (1 - t)));
@@ -485,6 +542,7 @@ export default function Diamond() {
   const [filters, setFilters] = useState<Filters>(defaultFilters);
   const [showTrails, setShowTrails] = useState(true);
   const [showLabels, setShowLabels] = useState(false);
+  const [showRunners, setShowRunners] = useState(true);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const [progressText, setProgressText] = useState("Idle");
@@ -509,6 +567,7 @@ export default function Diamond() {
   const speedRef = useRef(speed);
   const showTrailsRef = useRef(showTrails);
   const showLabelsRef = useRef(showLabels);
+  const showRunnersRef = useRef(showRunners);
   const modeRef = useRef(mode);
 
   useEffect(() => {
@@ -520,6 +579,15 @@ export default function Diamond() {
   useEffect(() => {
     showLabelsRef.current = showLabels;
   }, [showLabels]);
+  useEffect(() => {
+    showRunnersRef.current = showRunners;
+    // When the user toggles runners off, sweep the diamond clean immediately
+    // — don't wait for the next AB to enforce it.
+    if (!showRunners) {
+      for (const r of runnersRef.current.values()) killRunner(r);
+      runnersRef.current.clear();
+    }
+  }, [showRunners]);
   useEffect(() => {
     modeRef.current = mode;
   }, [mode]);
@@ -637,15 +705,12 @@ export default function Diamond() {
       const inningChanged = prevInning !== null && inningId !== prevInning;
 
       if (inningChanged) {
-        // Hard cut — synchronous teardown. In-flight tweens for these
-        // runners will keep ticking on detached DOM (harmless) and resolve
-        // into no-op map deletes.
-        for (const r of runnersRef.current.values()) {
-          r.rect.remove();
-          r.label.remove();
-        }
+        // Hard cut — synchronous teardown. `killRunner` bumps each
+        // runner's genId so any pending tween/fade aborts on its next
+        // frame (no more in-flight animations writing to detached DOM).
+        for (const r of runnersRef.current.values()) killRunner(r);
         runnersRef.current.clear();
-      } else {
+      } else if (showRunnersRef.current) {
         const expectedKeys = new Set<string>();
         const expectedByBase: { 1?: string; 2?: string; 3?: string } = {};
         if (before) {
@@ -661,20 +726,31 @@ export default function Diamond() {
         // 1. Remove any displayed runner not expected here.
         for (const [key, r] of [...runnersRef.current.entries()]) {
           if (!expectedKeys.has(key)) {
-            r.rect.remove();
-            r.label.remove();
+            killRunner(r);
             runnersRef.current.delete(key);
           }
         }
-        // 2. Seed any expected runner we're missing (recovery path).
+        // 2. Seed (or relocate) every expected runner. If they're already
+        //    on the diamond at the wrong base — typical drift after a
+        //    fast-playback tween got cancelled mid-flight — snap them to
+        //    the expected base instead of trusting the stale position.
         for (const b of [1, 2, 3] as const) {
           const nm = expectedByBase[b];
           if (!nm) continue;
-          if (!runnersRef.current.has(runnerKey(nm))) {
+          const key = runnerKey(nm);
+          const existing = runnersRef.current.get(key);
+          if (!existing) {
             const sq = createRunnerSquare(baseLayer, nm, b);
-            runnersRef.current.set(runnerKey(nm), sq);
+            runnersRef.current.set(key, sq);
+          } else if (existing.base !== b) {
+            snapRunnerTo(existing, b);
           }
         }
+      } else {
+        // showRunners is off — make sure nothing lingers from a previous
+        // toggle-on session.
+        for (const r of runnersRef.current.values()) killRunner(r);
+        runnersRef.current.clear();
       }
       lastHalfInningRef.current = inningId;
 
@@ -721,34 +797,60 @@ export default function Diamond() {
         fadeMarker(ball, 250, 0);
         fadeMarker(line, 350, 0);
         // ── RUNNER MOTION ──────────────────────────────────────────────────
-        // Animate every transition in ab.runner_moves. Fire after the ball
-        // lands (so the visual reads as "play happens then runners react").
-        // For inning-changed at-bats we wait for the seed to land before
-        // animating moves; for same-inning we kick off immediately.
-        const moves = (ab.runner_moves ?? []) as RunnerMove[];
+        // Two paths depending on playback speed:
+        //   * Slow (≥ TWEEN_MIN_SPEED s/play): tween every move smoothly
+        //     through the basepaths. Cancellation via genId means a new
+        //     AB cleanly retires any pending tween for the same runner.
+        //   * Fast: snap directly to the destination. The tween wouldn't
+        //     finish before the next AB anyway, and snapping guarantees
+        //     no stranded mid-base squares.
+        // Idempotent map deletes (`if (map.get(key) === r) map.delete(...)`)
+        // make the post-tween cleanup safe if the same key was rebound to
+        // a different runner object during a half-inning hard-wipe.
         const moveMs = moveDur * 1000;
-        // Was 260ms previously to wait for the async fade — now that the
-        // inning-change teardown is synchronous we can fire immediately.
-        const kickoff = 0;
-        setTimeout(() => {
+        if (showRunnersRef.current) {
+          const moves = (ab.runner_moves ?? []) as RunnerMove[];
+          const useSnap = speedSec < TWEEN_MIN_SPEED;
           for (const mv of moves) {
             const key = runnerKey(mv.name);
             const map = runnersRef.current;
-            // New batter stepping out of the box (from=0): create a square
-            // at home plate, then animate through the basepaths to wherever
-            // they ended up. The batter ALWAYS runs through 1B/2B/3B in
-            // order — no diagonals across the infield.
+            const safeDelete = (r: RunnerSquare) => {
+              if (map.get(key) === r) map.delete(key);
+            };
+
+            if (useSnap) {
+              // ── SNAP MODE ──
+              let r = map.get(key);
+              if (mv.from === 0) {
+                // Brand new batter — replace any prior runner with same key.
+                if (r) killRunner(r);
+                r = createRunnerSquare(baseLayer!, mv.name, 0);
+                map.set(key, r);
+              } else if (!r) {
+                r = createRunnerSquare(baseLayer!, mv.name, mv.from);
+                map.set(key, r);
+              }
+              if (mv.to === "out" || mv.to === 4) {
+                killRunner(r);
+                safeDelete(r);
+              } else {
+                snapRunnerTo(r, mv.to);
+              }
+              continue;
+            }
+
+            // ── TWEEN MODE ──
             if (mv.from === 0) {
               const r = createRunnerSquare(baseLayer!, mv.name, 0);
+              const prev = map.get(key);
+              if (prev) killRunner(prev);
               map.set(key, r);
               if (mv.to === "out") {
-                // Out at the plate (rare) — send to dugout.
-                void tweenRunnerToDugout(r, 320).then(() => map.delete(key));
+                void tweenRunnerToDugout(r, 320).then(() => safeDelete(r));
               } else {
                 void tweenRunner(r, 0, mv.to, moveMs).then(() => {
                   if (mv.to === 4) {
-                    // Scored. Pull the square off the field.
-                    void fadeAndRemoveRunner(r, 280).then(() => map.delete(key));
+                    void fadeAndRemoveRunner(r, 280).then(() => safeDelete(r));
                   } else {
                     r.base = mv.to as 1 | 2 | 3;
                   }
@@ -756,34 +858,30 @@ export default function Diamond() {
               }
               continue;
             }
-            // Existing runner advancing. Look them up; if they aren't on the
-            // diamond (data gap), conjure a square at their `from` base.
             let r = map.get(key);
             if (!r) {
               r = createRunnerSquare(baseLayer!, mv.name, mv.from);
               map.set(key, r);
             }
+            const runner = r;
             if (mv.to === "out") {
-              // Tagged or forced out — slide to the dugout instead of just
-              // vanishing in place.
-              const runner = r;
-              void tweenRunnerToDugout(runner, 320).then(() => map.delete(key));
+              void tweenRunnerToDugout(runner, 320).then(() => safeDelete(runner));
             } else {
-              const runner = r;
               void tweenRunner(runner, mv.from, mv.to, moveMs).then(() => {
                 if (mv.to === 4) {
-                  void fadeAndRemoveRunner(runner, 280).then(() => map.delete(key));
+                  void fadeAndRemoveRunner(runner, 280).then(() => safeDelete(runner));
                 } else {
                   runner.base = mv.to as 1 | 2 | 3;
                 }
               });
             }
           }
-        }, kickoff);
+        }
         // Run-scoring flash fires alongside the runner motion so the crossing
-        // of home reads as a beat in the visual.
-        if (ab.run_scoring && ab.runs_scored > 0) {
-          setTimeout(() => flashHome(active!, ab.runs_scored), kickoff + moveMs * 0.7);
+        // of home reads as a beat in the visual. Hidden when the user opts
+        // out of baserunner display — same toggle covers both.
+        if (showRunnersRef.current && ab.run_scoring && ab.runs_scored > 0) {
+          setTimeout(() => flashHome(active!, ab.runs_scored), moveMs * 0.7);
         }
         // If this is the last at-bat of its half-inning (3 outs / end of
         // inning) AND we're at the end of the sequence, clear the basepaths
@@ -791,7 +889,7 @@ export default function Diamond() {
         // next AB's reconciliation will handle it; we only need the explicit
         // clear when there IS no next AB.
         if (isLastOfHalfInning) {
-          const clearAt = kickoff + moveMs + 300;
+          const clearAt = moveMs + 300;
           const scheduledInning = inningId;
           setTimeout(() => {
             // Guard against the race where the next AB already started a
@@ -1355,6 +1453,14 @@ export default function Diamond() {
               onChange={(e) => setShowLabels(e.target.checked)}
             />
             Show batter labels
+          </label>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={showRunners}
+              onChange={(e) => setShowRunners(e.target.checked)}
+            />
+            Show baserunners &amp; scores
           </label>
         </div>
 
