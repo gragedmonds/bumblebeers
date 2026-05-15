@@ -27,6 +27,11 @@ export type InningLineup = Partial<Record<Pos, string>>;
 export interface GameLineup {
   // Eight innings, index 0–7 = innings 1–8.
   innings: InningLineup[];
+  // Batting order: person_keys in batting order (1, 2, 3, ...). Optional
+  // for back-compat — older payloads pre-date the order field. Players
+  // listed here may or may not field on a given inning; non-fielders sit
+  // in the bottom of the lineup table but still bat.
+  batting_order?: string[];
 }
 
 export interface PersistedNight {
@@ -121,7 +126,21 @@ export function sanitizeNight(date: string, input: unknown): PersistedNight {
       }
       padded[i] = row;
     });
-    return { innings: padded };
+    const game: GameLineup = { innings: padded };
+    const orderRaw = (rg as { batting_order?: unknown }).batting_order;
+    if (Array.isArray(orderRaw)) {
+      const seen = new Set<string>();
+      const order: string[] = [];
+      for (const v of orderRaw) {
+        const s = typeof v === "string" ? v.trim() : "";
+        if (!s || seen.has(s)) continue;
+        seen.add(s);
+        order.push(s);
+        if (order.length >= 32) break;
+      }
+      if (order.length) game.batting_order = order;
+    }
+    return game;
   });
 
   return out;

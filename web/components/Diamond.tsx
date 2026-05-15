@@ -488,6 +488,10 @@ export default function Diamond() {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const [progressText, setProgressText] = useState("Idle");
+  // Position in the current sequence — drives the scrubber + visible "X of Y"
+  // counter. Mirrors `idxRef.current` for any code path that needs to render.
+  const [position, setPosition] = useState(0);
+  const [seqLen, setSeqLen] = useState(0);
   const [nowCard, setNowCard] = useState<React.ReactNode>(
     <em className="text-stone-500">Press Play to start.</em>,
   );
@@ -609,48 +613,67 @@ export default function Diamond() {
       const c = colorFor(ab.result || undefined);
 
       // ── PERSISTENT BASE STATE ────────────────────────────────────────────
-      // Reconcile displayed runners against this AB's `runners_before`
-      // snapshot. Anyone currently on the diamond who's NOT named in
-      // runners_before shouldn't be there — wipe them synchronously. This
-      // is the single source of truth for "who's actually on base right
-      // now", and it catches:
-      //   1. Inning transitions (next AB's runners_before is empty → all
-      //      leftover runners cleared, no race-condition timing)
-      //   2. Missed-move data quirks (runner who got out without an
-      //      explicit move never accumulates as a "stuck" square)
-      //   3. The general "anything we haven't already removed" case
-      // After the wipe, seed any expected runners we don't have yet — most
-      // of the time this is a no-op (the animation already placed them),
-      // but it's the recovery path for snapshot-to-display drift.
+      // Two reconciliation paths depending on whether we just crossed a
+      // half-inning boundary:
+      //
+      //  (a) NEW HALF-INNING (`half_inning_id` differs from the last AB we
+      //      animated): hard-wipe every runner from the DOM + map and DO NOT
+      //      seed from `runners_before`. Slo-pitch innings always start with
+      //      zero runners, so this is physically correct. We deliberately
+      //      ignore `runners_before` at inning boundaries because the
+      //      Phase 3 motion walker bleeds stale state across ~19% of inning
+      //      starts (245 of 1294 in current snapshot) — trusting it would
+      //      "stick" runners that aren't actually there. The next AB's
+      //      `runner_moves` will conjure any genuine mid-play state via the
+      //      data-gap recovery branch below.
+      //
+      //  (b) SAME HALF-INNING (or first AB of session): standard
+      //      reconciliation against `runners_before` — remove anyone not
+      //      expected, seed anyone we're missing. Preserves continuity
+      //      across consecutive ABs in the same frame.
       const inningId = ab.half_inning_id ?? null;
       const before = ab.runners_before ?? null;
-      const expectedKeys = new Set<string>();
-      const expectedByBase: { 1?: string; 2?: string; 3?: string } = {};
-      if (before) {
-        for (const b of [1, 2, 3] as const) {
-          const nm = before[String(b) as "1" | "2" | "3"];
-          if (nm) {
-            const key = runnerKey(nm);
-            expectedKeys.add(key);
-            expectedByBase[b] = nm;
-          }
-        }
-      }
-      // 1. Remove any displayed runner not expected here.
-      for (const [key, r] of [...runnersRef.current.entries()]) {
-        if (!expectedKeys.has(key)) {
+      const prevInning = lastHalfInningRef.current;
+      const inningChanged = prevInning !== null && inningId !== prevInning;
+
+      if (inningChanged) {
+        // Hard cut — synchronous teardown. In-flight tweens for these
+        // runners will keep ticking on detached DOM (harmless) and resolve
+        // into no-op map deletes.
+        for (const r of runnersRef.current.values()) {
           r.rect.remove();
           r.label.remove();
-          runnersRef.current.delete(key);
         }
-      }
-      // 2. Seed any expected runner we're missing (recovery path).
-      for (const b of [1, 2, 3] as const) {
-        const nm = expectedByBase[b];
-        if (!nm) continue;
-        if (!runnersRef.current.has(runnerKey(nm))) {
-          const sq = createRunnerSquare(baseLayer, nm, b);
-          runnersRef.current.set(runnerKey(nm), sq);
+        runnersRef.current.clear();
+      } else {
+        const expectedKeys = new Set<string>();
+        const expectedByBase: { 1?: string; 2?: string; 3?: string } = {};
+        if (before) {
+          for (const b of [1, 2, 3] as const) {
+            const nm = before[String(b) as "1" | "2" | "3"];
+            if (nm) {
+              const key = runnerKey(nm);
+              expectedKeys.add(key);
+              expectedByBase[b] = nm;
+            }
+          }
+        }
+        // 1. Remove any displayed runner not expected here.
+        for (const [key, r] of [...runnersRef.current.entries()]) {
+          if (!expectedKeys.has(key)) {
+            r.rect.remove();
+            r.label.remove();
+            runnersRef.current.delete(key);
+          }
+        }
+        // 2. Seed any expected runner we're missing (recovery path).
+        for (const b of [1, 2, 3] as const) {
+          const nm = expectedByBase[b];
+          if (!nm) continue;
+          if (!runnersRef.current.has(runnerKey(nm))) {
+            const sq = createRunnerSquare(baseLayer, nm, b);
+            runnersRef.current.set(runnerKey(nm), sq);
+          }
         }
       }
       lastHalfInningRef.current = inningId;
@@ -833,7 +856,9 @@ export default function Diamond() {
     idxRef.current = 0;
     clearLayers();
     const seq = getSequence();
+    setSeqLen(seq.length);
     if (seq.length === 0) {
+      setPosition(0);
       setProgressText("0 at-bats queued");
       setNowCard(
         <em className="text-stone-500">No at-bats match the current filters.</em>,
@@ -842,6 +867,7 @@ export default function Diamond() {
     }
     renderShowAll(seq);
     idxRef.current = seq.length;
+    setPosition(seq.length);
     setProgressText(`${seq.length} / ${seq.length} (all rendered)`);
     setNowCard(
       <em className="text-stone-500">
@@ -888,6 +914,7 @@ export default function Diamond() {
     );
     setProgressText(`${idxRef.current + 1} / ${seq.length} (${ab.date})`);
     idxRef.current++;
+    setPosition(idxRef.current);
     const speedMs = speedRef.current * 1000;
     timerRef.current = setTimeout(step, speedMs);
   }, [animateOne, getSequence]);
@@ -897,6 +924,7 @@ export default function Diamond() {
     const seq = getSequence();
     if (idxRef.current >= seq.length) {
       idxRef.current = 0;
+      setPosition(0);
       clearLayers();
     }
     playingRef.current = true;
@@ -907,6 +935,7 @@ export default function Diamond() {
   const restart = useCallback(() => {
     pause();
     idxRef.current = 0;
+    setPosition(0);
     clearLayers();
     play();
   }, [clearLayers, pause, play]);
@@ -917,6 +946,7 @@ export default function Diamond() {
     const seq = getSequence();
     renderShowAll(seq);
     idxRef.current = seq.length;
+    setPosition(seq.length);
     setNowCard(
       <em className="text-stone-500">
         Showing all {seq.length} at-bats. Hover the chips to highlight subsets.
@@ -924,6 +954,42 @@ export default function Diamond() {
     );
     setProgressText(`${seq.length} / ${seq.length} (all rendered)`);
   }, [clearLayers, getSequence, pause, renderShowAll]);
+
+  // Jump to any point in the sequence. Trails for already-played ABs are
+  // re-rendered so the diamond reflects "we just played up to here", and
+  // playback resumes from `target` if the user presses Play.
+  const seekTo = useCallback(
+    (target: number) => {
+      pause();
+      const seq = getSequence();
+      const t = Math.max(0, Math.min(seq.length, Math.floor(target)));
+      clearLayers();
+      if (t > 0) renderShowAll(seq.slice(0, t));
+      idxRef.current = t;
+      setPosition(t);
+      if (seq.length === 0) {
+        setProgressText("0 at-bats queued");
+        return;
+      }
+      if (t >= seq.length) {
+        setProgressText(`${seq.length} / ${seq.length} (end)`);
+        setNowCard(<em className="text-stone-500">End of sequence.</em>);
+      } else {
+        const ab = seq[t];
+        setProgressText(`${t} / ${seq.length} (${ab.date})`);
+        setNowCard(
+          <div className="text-sm text-stone-600">
+            <div>
+              Up next: <b className="text-stone-900">{ab.batter}</b>
+              {ab.opponent ? <span className="text-stone-500"> vs {ab.opponent}</span> : null}
+            </div>
+            <div className="text-xs text-stone-500">{ab.date}</div>
+          </div>,
+        );
+      }
+    },
+    [clearLayers, getSequence, pause, renderShowAll],
+  );
 
   // Highlight chips
   const highlightChips = useMemo(() => {
@@ -1160,6 +1226,23 @@ export default function Diamond() {
               }
             }}
             className="w-full accent-amber-700"
+          />
+          <div className="mt-3 flex items-center justify-between text-xs text-stone-500">
+            <span>Position</span>
+            <span className="tabular-nums">
+              {position} / {seqLen}
+            </span>
+          </div>
+          <input
+            type="range"
+            min={0}
+            max={Math.max(seqLen, 1)}
+            step={1}
+            value={Math.min(position, seqLen)}
+            disabled={seqLen === 0}
+            onChange={(e) => seekTo(+e.target.value)}
+            className="w-full accent-amber-700 disabled:opacity-50"
+            aria-label="Jump to at-bat"
           />
         </div>
 

@@ -39,9 +39,29 @@ body::before {
   background-repeat: no-repeat;
   background-position: bottom right;
   background-size: cover;
+  /* Multiplies on top of the SVG's fill-opacity so the densest hexes top
+   * out around 3% effective opacity — present but only barely. Adjust here
+   * to dial the whole pattern up or down without regenerating the SVG. */
+  opacity: 0.2;
 }
 
 /* Legacy class kept as a no-op so any inline style="background-image: ..."
  * applied via layout.tsx falls back to the pseudo-element pattern. */
 .bg-honeycomb {
+}
+
+/* Print: drop the honeycomb wash and the safe-area padding the bottom nav
+ * adds so a printed page isn't padded out for nothing. The Nav + Beeves
+ * widgets carry their own `print:hidden` classes. */
+@media print {
+  body::before {
+    display: none !important;
+  }
+  body {
+    background: white !important;
+  }
+  main {
+    padding: 0 !important;
+    max-width: none !important;
+  }
 }

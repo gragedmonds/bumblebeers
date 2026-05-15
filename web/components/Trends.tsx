@@ -10,7 +10,7 @@ import {
   Title,
   Tooltip,
 } from "chart.js";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Line } from "react-chartjs-2";
 import { useSnapshot } from "@/lib/useSnapshot";
 import type { Player, PlayerGame } from "@/lib/data";
@@ -73,15 +73,42 @@ export default function Trends() {
   const [ymax, setYmax] = useState<number | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [initialized, setInitialized] = useState(false);
+  const [archived, setArchived] = useState<Set<string>>(new Set());
+
+  // Pull the archive list from the shared lineup blob so retired players
+  // (e.g. someone Greg explicitly archived on /lineup) drop out of Trends
+  // too. Best-effort: if /api/lineup fails or storage isn't configured,
+  // we just show everyone — the page still works.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await fetch("/api/lineup", { cache: "no-store" });
+        if (!r.ok) return;
+        const json = (await r.json()) as { archived?: unknown };
+        if (cancelled) return;
+        if (Array.isArray(json.archived)) {
+          setArchived(new Set(json.archived.filter((s): s is string => typeof s === "string")));
+        }
+      } catch {
+        // ignore — chart still renders without filter
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const playerKeys = useMemo(() => {
     if (!snapshot) return [];
-    return Object.keys(snapshot.players).sort((a, b) => {
-      const ca = snapshot.career_weighted[a]?.career_BMBLplus_weighted ?? -999;
-      const cb = snapshot.career_weighted[b]?.career_BMBLplus_weighted ?? -999;
-      return cb - ca;
-    });
-  }, [snapshot]);
+    return Object.keys(snapshot.players)
+      .filter((k) => !archived.has(k))
+      .sort((a, b) => {
+        const ca = snapshot.career_weighted[a]?.career_BMBLplus_weighted ?? -999;
+        const cb = snapshot.career_weighted[b]?.career_BMBLplus_weighted ?? -999;
+        return cb - ca;
+      });
+  }, [snapshot, archived]);
 
   const years = useMemo(() => {
     if (!snapshot) return [];

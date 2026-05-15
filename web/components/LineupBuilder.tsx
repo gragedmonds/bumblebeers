@@ -1,13 +1,17 @@
 "use client";
 
-// The per-night lineup builder. Renders TWO 8-inning grids (one per game),
-// each with rows = positions, columns = innings. Each cell picks a player
-// from the attending roster.
+// The per-night lineup builder. TRANSPOSED layout: rows = players in
+// batting order, columns = innings. Each cell picks a defensive position
+// for that player in that inning (or "Sit"). Players can be reordered by
+// drag-and-drop on desktop or up/down arrows on touch.
 //
-// Constraint enforced live: a player already playing a different position in
-// the same inning is removed from the other position-pickers for that inning.
-// "Suggest fill" greedy-assigns empty cells, preferring players marked
-// "should play" the position, then "can play", then any eligible attendee.
+// Storage stays "position → player" per inning (InningLineup) so the
+// existing API contracts and Claude prompts don't change. The batting
+// order is stored per game on `GameLineup.batting_order`.
+//
+// Constraint enforced live: a position can only be assigned to one player
+// per inning. Picking a position that's already taken evicts the prior
+// holder for that inning.
 
 import { useCallback, useMemo, useState } from "react";
 import {
@@ -32,20 +36,30 @@ interface LineupBuilderProps {
   prefs: Lineup; // shared can/should matrix
   games: GameLineup[]; // 0 or 2
   opponent?: string | null;
+  // When non-null, parent will render a "Print" button targeting this URL.
+  // Lives on the parent so the builder doesn't need to know about routing.
+  printHref?: string;
   onChange: (next: GameLineup[]) => void;
 }
 
 const INNINGS = [1, 2, 3, 4, 5, 6, 7, 8] as const;
-type Inning = (typeof INNINGS)[number]; // 1..8
+
+function emptyInnings(): InningLineup[] {
+  return Array.from({ length: 8 }, () => ({}) as InningLineup);
+}
 
 function ensureTwoGames(games: GameLineup[]): GameLineup[] {
   const out: GameLineup[] = [];
   for (let i = 0; i < 2; i++) {
-    out.push(
-      games[i] && Array.isArray(games[i].innings) && games[i].innings.length === 8
-        ? { innings: games[i].innings.map((row) => ({ ...row })) }
-        : { innings: Array.from({ length: 8 }, () => ({} as InningLineup)) },
-    );
+    const g = games[i];
+    if (g && Array.isArray(g.innings) && g.innings.length === 8) {
+      out.push({
+        innings: g.innings.map((row) => ({ ...row })),
+        batting_order: Array.isArray(g.batting_order) ? [...g.batting_order] : undefined,
+      });
+    } else {
+      out.push({ innings: emptyInnings() });
+    }
   }
   return out;
 }
@@ -54,53 +68,42 @@ function prefRank(prefs: Lineup, personKey: string, pos: Pos): Mark | "none" {
   return (prefs.matrix[personKey]?.[pos] as Mark | undefined) ?? "none";
 }
 
-// Greedy fill that respects:
-//   - attendee set
-//   - one-position-per-inning per player
-//   - existing assignments (never overwritten)
-// Player scoring per slot:
-//   - should-play this position: +1000
-//   - can-play this position: +500
-//   - already played fewer innings overall: bonus inversely proportional to count
-function suggestFill(
-  game: GameLineup,
-  attendees: string[],
-  prefs: Lineup,
-  positions: readonly Pos[],
-): GameLineup {
-  const innings = game.innings.map((row) => ({ ...row }));
-  // Count current innings played per player (across this game only).
-  const inningsPlayed = new Map<string, number>();
-  innings.forEach((row) =>
-    Object.values(row).forEach((pk) => {
-      if (pk) inningsPlayed.set(pk, (inningsPlayed.get(pk) ?? 0) + 1);
-    }),
-  );
-  for (let i = 0; i < innings.length; i++) {
-    const used = new Set(Object.values(innings[i]).filter(Boolean) as string[]);
-    for (const pos of positions) {
-      if (innings[i][pos]) continue;
-      // Score every attendee
-      const candidates = attendees
-        .filter((pk) => !used.has(pk))
-        .map((pk) => {
-          const mark = prefRank(prefs, pk, pos);
-          let score = 0;
-          if (mark === "should") score += 1000;
-          else if (mark === "can") score += 500;
-          // Spread innings — fewer played → higher score
-          score += 50 - (inningsPlayed.get(pk) ?? 0) * 10;
-          return { pk, score };
-        })
-        .sort((a, b) => b.score - a.score);
-      if (candidates.length === 0) continue;
-      const pick = candidates[0].pk;
-      innings[i][pos] = pick;
-      used.add(pick);
-      inningsPlayed.set(pick, (inningsPlayed.get(pick) ?? 0) + 1);
+// Resolve a stable batting order for the given attendees. Anything in the
+// stored order that's still attending stays in its position; new attendees
+// land at the bottom alphabetically. Drops anyone no longer attending.
+function resolveOrder(
+  attending: string[],
+  stored: string[] | undefined,
+  rosterByKey: Map<string, RosterPlayer>,
+): string[] {
+  const inSet = new Set(attending);
+  const seen = new Set<string>();
+  const out: string[] = [];
+  if (stored) {
+    for (const k of stored) {
+      if (inSet.has(k) && !seen.has(k)) {
+        seen.add(k);
+        out.push(k);
+      }
     }
   }
-  return { innings };
+  const remaining = attending
+    .filter((k) => !seen.has(k))
+    .sort((a, b) => {
+      const na = rosterByKey.get(a)?.display_name ?? a;
+      const nb = rosterByKey.get(b)?.display_name ?? b;
+      return na.localeCompare(nb);
+    });
+  out.push(...remaining);
+  return out;
+}
+
+// Look up which position a player occupies in a given inning, if any.
+function posInInning(row: InningLineup, playerKey: string): Pos | null {
+  for (const [pos, pk] of Object.entries(row)) {
+    if (pk === playerKey) return pos as Pos;
+  }
+  return null;
 }
 
 interface SuggestResponse {
@@ -125,6 +128,7 @@ export default function LineupBuilder({
   prefs,
   games,
   opponent,
+  printHref,
   onChange,
 }: LineupBuilderProps) {
   const [activeGame, setActiveGame] = useState(0);
@@ -136,18 +140,15 @@ export default function LineupBuilder({
     usage: SuggestResponse["usage"];
     gameIdx: number;
   } | null>(null);
+  // Drag-and-drop state — the person_key of the row currently being dragged.
+  const [dragKey, setDragKey] = useState<string | null>(null);
 
-  // 9-player mode: when fewer than 10 attendees, drop one CF (the LCF/RCF
-  // pair collapses to a single CF, stored under "LCF" in the canonical
-  // matrix and rendered as "CF" in the UI).
   const mode: LineupMode = useMemo(
     () => modeForAttendeeCount(attending.length),
     [attending.length],
   );
   const positions = useMemo(() => POSITIONS_BY_MODE[mode], [mode]);
 
-  // Make sure we always have exactly 2 games to render. Re-running on every
-  // render is fine — it's a couple-of-element copy.
   const ensured = useMemo(() => ensureTwoGames(games), [games]);
   const game = ensured[activeGame];
 
@@ -157,8 +158,12 @@ export default function LineupBuilder({
     return m;
   }, [roster]);
 
-  // For each attendee, count innings played in the current game — surfaced as
-  // a side panel.
+  const order = useMemo(
+    () => resolveOrder(attending, game.batting_order, rosterByKey),
+    [attending, game.batting_order, rosterByKey],
+  );
+
+  // Innings played per player, current game.
   const inningsPlayed = useMemo(() => {
     const counts = new Map<string, number>();
     game.innings.forEach((row) =>
@@ -169,28 +174,58 @@ export default function LineupBuilder({
     return counts;
   }, [game]);
 
-  const setCell = useCallback(
-    (inningIdx: number, pos: Pos, value: string) => {
+  // Set or clear a player's position for a single inning. Evicts whoever
+  // previously held that position in the same inning.
+  const assign = useCallback(
+    (inningIdx: number, playerKey: string, newPos: Pos | null) => {
       const next = ensureTwoGames(ensured);
-      const row = { ...next[activeGame].innings[inningIdx] };
-      if (!value) delete row[pos];
-      else row[pos] = value;
+      const row: InningLineup = { ...next[activeGame].innings[inningIdx] };
+      // Drop this player from whatever they currently hold in this inning.
+      for (const [pos, pk] of Object.entries(row)) {
+        if (pk === playerKey) delete row[pos as Pos];
+      }
+      if (newPos) {
+        // Evict any prior holder of newPos in this inning.
+        delete row[newPos];
+        row[newPos] = playerKey;
+      }
       next[activeGame].innings[inningIdx] = row;
       onChange(next);
     },
     [activeGame, ensured, onChange],
   );
 
+  // Persist a new batting order for the active game.
+  const setOrder = useCallback(
+    (nextOrder: string[]) => {
+      const next = ensureTwoGames(ensured);
+      next[activeGame] = { ...next[activeGame], batting_order: nextOrder };
+      onChange(next);
+    },
+    [activeGame, ensured, onChange],
+  );
+
+  const moveRow = useCallback(
+    (fromIdx: number, toIdx: number) => {
+      if (fromIdx === toIdx) return;
+      const next = order.slice();
+      const [moved] = next.splice(fromIdx, 1);
+      next.splice(toIdx, 0, moved);
+      setOrder(next);
+    },
+    [order, setOrder],
+  );
+
   const handleClearGame = useCallback(() => {
     const next = ensureTwoGames(ensured);
-    next[activeGame] = { innings: Array.from({ length: 8 }, () => ({} as InningLineup)) };
+    next[activeGame] = { innings: emptyInnings(), batting_order: order };
     onChange(next);
-  }, [activeGame, ensured, onChange]);
+  }, [activeGame, ensured, onChange, order]);
 
   const handleClearBoth = useCallback(() => {
     const next = ensureTwoGames(ensured);
-    next[0] = { innings: Array.from({ length: 8 }, () => ({} as InningLineup)) };
-    next[1] = { innings: Array.from({ length: 8 }, () => ({} as InningLineup)) };
+    next[0] = { innings: emptyInnings(), batting_order: next[0].batting_order };
+    next[1] = { innings: emptyInnings(), batting_order: next[1].batting_order };
     onChange(next);
   }, [ensured, onChange]);
 
@@ -218,9 +253,6 @@ export default function LineupBuilder({
     return json;
   }
 
-  // Generate both games in one click. Game 1 fires first; game 2 sees game 1's
-  // assignments via `prior_game` so notes like "rotate pitchers next game"
-  // resolve correctly.
   const handleGenerateBoth = useCallback(async () => {
     setSmartBusy(true);
     setSmartErr(null);
@@ -236,28 +268,21 @@ export default function LineupBuilder({
         opponent: opponent ?? undefined,
         mode,
       };
-
-      // Game 1 — empty `existing` so Claude has free rein.
       const g1 = await callSuggest({
         ...sharedBase,
         game_num: 1,
         existing: ensured[0].innings,
       });
-
-      // Game 2 — pass game 1's result so "rotate next game" can take effect.
       const g2 = await callSuggest({
         ...sharedBase,
         game_num: 2,
         prior_game: g1.innings,
         existing: ensured[1].innings,
       });
-
       const next = ensureTwoGames(ensured);
-      next[0] = { innings: g1.innings! };
-      next[1] = { innings: g2.innings! };
+      next[0] = { innings: g1.innings!, batting_order: next[0].batting_order };
+      next[1] = { innings: g2.innings!, batting_order: next[1].batting_order };
       onChange(next);
-
-      // Merge usage across the two calls so cost is visible.
       const usage = g1.usage && g2.usage
         ? {
             input: g1.usage.input + g2.usage.input,
@@ -332,12 +357,31 @@ export default function LineupBuilder({
         </button>
         <button
           type="button"
+          onClick={handleClearGame}
+          disabled={smartBusy}
+          className="min-h-11 rounded-md border border-stone-300 px-3 py-2 hover:bg-stone-100 disabled:opacity-50"
+        >
+          Clear game
+        </button>
+        <button
+          type="button"
           onClick={handleClearBoth}
           disabled={smartBusy}
           className="min-h-11 rounded-md border border-stone-300 px-3 py-2 hover:bg-stone-100 disabled:opacity-50"
         >
           Clear both
         </button>
+        {printHref && (
+          <a
+            href={printHref}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="min-h-11 rounded-md border border-stone-300 px-3 py-2 hover:bg-stone-100"
+            title="Open a print-friendly view of both games"
+          >
+            Export to PDF
+          </a>
+        )}
         <span className="ml-auto self-center text-xs text-stone-500">
           {mode === "nine"
             ? `9-player mode · one CF · ${attending.length} in`
@@ -373,115 +417,169 @@ export default function LineupBuilder({
         <table className="min-w-full text-sm">
           <thead className="bg-amber-50/80 text-xs uppercase tracking-wide text-stone-500">
             <tr>
-              <th className="sticky left-0 z-10 bg-amber-50/80 px-2 py-2 text-left">Pos</th>
+              <th className="sticky left-0 z-10 bg-amber-50/80 px-2 py-2 text-left">#</th>
+              <th className="sticky left-8 z-10 bg-amber-50/80 px-2 py-2 text-left">Player</th>
               {INNINGS.map((i) => (
                 <th key={i} className="px-1 py-2 text-center font-semibold">
                   Inn {i}
                 </th>
               ))}
+              <th className="px-2 py-2 text-center" title="Innings played in the field">IP</th>
             </tr>
           </thead>
           <tbody>
-            {positions.map((pos) => (
-              <tr key={pos} className="border-t border-stone-100">
-                <td className="sticky left-0 z-10 bg-white px-2 py-1.5 font-semibold text-stone-800">
-                  {positionLabel(pos, mode)}
-                </td>
-                {INNINGS.map((inning) => {
-                  const inningIdx = (inning as number) - 1;
-                  const row = game.innings[inningIdx];
-                  const current = row[pos] ?? "";
-                  // Players assigned to other positions in this inning are
-                  // disqualified — they can't play two spots at once.
-                  const usedElsewhere = new Set(
-                    positions.filter((p) => p !== pos).map((p) => row[p]).filter(Boolean) as string[],
-                  );
-                  // Eligible candidates: attending, not playing elsewhere this inning.
-                  const candidates = attending
-                    .filter((pk) => !usedElsewhere.has(pk))
-                    .map((pk) => {
-                      const mark = prefRank(prefs, pk, pos);
-                      return {
-                        pk,
-                        name: rosterByKey.get(pk)?.display_name ?? pk,
-                        mark,
-                      };
-                    })
-                    .sort((a, b) => {
-                      const w = (m: Mark | "none") => (m === "should" ? 0 : m === "can" ? 1 : 2);
-                      const dw = w(a.mark) - w(b.mark);
-                      return dw !== 0 ? dw : a.name.localeCompare(b.name);
-                    });
-                  return (
-                    <PositionCell
-                      key={`${pos}-${inning}`}
-                      value={current}
-                      candidates={candidates}
-                      onChange={(v) => setCell(inningIdx, pos, v)}
-                    />
-                  );
-                })}
-              </tr>
-            ))}
+            {order.map((pk, rowIdx) => {
+              const name = rosterByKey.get(pk)?.display_name ?? pk;
+              const isDragging = dragKey === pk;
+              const isDropTarget = dragKey != null && dragKey !== pk;
+              return (
+                <tr
+                  key={pk}
+                  draggable
+                  onDragStart={(e) => {
+                    setDragKey(pk);
+                    e.dataTransfer.effectAllowed = "move";
+                    // Firefox needs data set to start the drag.
+                    e.dataTransfer.setData("text/plain", pk);
+                  }}
+                  onDragEnd={() => setDragKey(null)}
+                  onDragOver={(e) => {
+                    if (isDropTarget) e.preventDefault();
+                  }}
+                  onDrop={(e) => {
+                    if (!isDropTarget || !dragKey) return;
+                    e.preventDefault();
+                    const fromIdx = order.indexOf(dragKey);
+                    if (fromIdx >= 0) moveRow(fromIdx, rowIdx);
+                    setDragKey(null);
+                  }}
+                  className={`border-t border-stone-100 ${
+                    isDragging ? "opacity-40" : ""
+                  } ${isDropTarget ? "hover:bg-amber-50" : ""}`}
+                >
+                  <td className="sticky left-0 z-10 bg-white px-1 py-1.5 text-center text-xs font-semibold text-stone-500">
+                    <div className="flex items-center gap-0.5">
+                      <span
+                        className="cursor-grab select-none text-stone-400 active:cursor-grabbing"
+                        title="Drag to reorder"
+                        aria-hidden
+                      >
+                        ⋮⋮
+                      </span>
+                      <span className="tabular-nums">{rowIdx + 1}</span>
+                    </div>
+                  </td>
+                  <td className="sticky left-8 z-10 bg-white px-2 py-1.5 font-semibold text-stone-800">
+                    <div className="flex items-center gap-1">
+                      <span className="flex-1 whitespace-nowrap">{name}</span>
+                      <span className="flex flex-col gap-0.5">
+                        <button
+                          type="button"
+                          onClick={() => moveRow(rowIdx, Math.max(0, rowIdx - 1))}
+                          disabled={rowIdx === 0}
+                          aria-label="Move up"
+                          className="rounded px-1 text-[10px] text-stone-400 hover:bg-amber-100 hover:text-amber-900 disabled:opacity-30"
+                        >
+                          ▲
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => moveRow(rowIdx, Math.min(order.length - 1, rowIdx + 1))}
+                          disabled={rowIdx === order.length - 1}
+                          aria-label="Move down"
+                          className="rounded px-1 text-[10px] text-stone-400 hover:bg-amber-100 hover:text-amber-900 disabled:opacity-30"
+                        >
+                          ▼
+                        </button>
+                      </span>
+                    </div>
+                  </td>
+                  {INNINGS.map((inning) => {
+                    const inningIdx = (inning as number) - 1;
+                    const row = game.innings[inningIdx];
+                    const current = posInInning(row, pk);
+                    const usedByOthers = new Set(
+                      Object.entries(row)
+                        .filter(([, owner]) => owner && owner !== pk)
+                        .map(([pos]) => pos as Pos),
+                    );
+                    return (
+                      <PositionCell
+                        key={`${pk}-${inning}`}
+                        value={current}
+                        playerKey={pk}
+                        positions={positions}
+                        usedByOthers={usedByOthers}
+                        prefs={prefs}
+                        mode={mode}
+                        onChange={(p) => assign(inningIdx, pk, p)}
+                      />
+                    );
+                  })}
+                  <td className="px-2 py-1.5 text-center tabular-nums">
+                    <span
+                      className={
+                        (inningsPlayed.get(pk) ?? 0) === 0 ? "text-red-600 font-semibold" : "text-stone-700"
+                      }
+                    >
+                      {inningsPlayed.get(pk) ?? 0}
+                    </span>
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
 
-      <div>
-        <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-stone-500">
-          Innings played (Game {activeGame + 1})
-        </h3>
-        <ul className="flex flex-wrap gap-x-3 gap-y-1 text-sm">
-          {attending.map((pk) => {
-            const name = rosterByKey.get(pk)?.display_name ?? pk;
-            const n = inningsPlayed.get(pk) ?? 0;
-            return (
-              <li key={pk} className="text-stone-700">
-                {name}: <b className={n === 0 ? "text-red-600" : "text-stone-900"}>{n}</b>
-              </li>
-            );
-          })}
-        </ul>
-      </div>
+      <p className="text-xs text-stone-500">
+        Drag <span className="font-mono">⋮⋮</span> or use ▲▼ to reorder the batting lineup. Each cell
+        picks the player&apos;s defensive position for that inning — &ldquo;Sit&rdquo; means they
+        bat but don&apos;t field. Positions already taken in an inning are hidden from the other rows.
+      </p>
     </div>
   );
 }
 
 function PositionCell({
   value,
-  candidates,
+  playerKey,
+  positions,
+  usedByOthers,
+  prefs,
+  mode,
   onChange,
 }: {
-  value: string;
-  candidates: { pk: string; name: string; mark: Mark | "none" }[];
-  onChange: (v: string) => void;
+  value: Pos | null;
+  playerKey: string;
+  positions: readonly Pos[];
+  usedByOthers: Set<Pos>;
+  prefs: Lineup;
+  mode: LineupMode;
+  onChange: (pos: Pos | null) => void;
 }) {
-  // Make sure the currently-selected player is in the dropdown even if they
-  // got filtered out (e.g. you re-marked them OUT mid-edit).
-  const hasCurrent = value === "" || candidates.some((c) => c.pk === value);
+  const eligible = positions.filter((p) => !usedByOthers.has(p) || p === value);
   return (
     <td className="px-1 py-1 text-center">
       <select
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className={`min-h-11 w-28 max-w-full rounded-md border bg-white px-1 text-sm ${
+        value={value ?? ""}
+        onChange={(e) => onChange(e.target.value ? (e.target.value as Pos) : null)}
+        className={`min-h-11 w-20 max-w-full rounded-md border bg-white px-1 text-sm ${
           value
             ? "border-amber-400 font-semibold text-stone-900"
             : "border-stone-200 text-stone-400"
         }`}
       >
-        <option value="">—</option>
-        {!hasCurrent && (
-          <option value={value} disabled>
-            {value} (unavailable)
-          </option>
-        )}
-        {candidates.map((c) => (
-          <option key={c.pk} value={c.pk}>
-            {c.name}
-            {c.mark === "should" ? " ★" : c.mark === "can" ? " ●" : ""}
-          </option>
-        ))}
+        <option value="">Sit</option>
+        {eligible.map((p) => {
+          const mark = prefRank(prefs, playerKey, p);
+          return (
+            <option key={p} value={p}>
+              {positionLabel(p, mode)}
+              {mark === "should" ? " ★" : mark === "can" ? " ●" : ""}
+            </option>
+          );
+        })}
       </select>
     </td>
   );

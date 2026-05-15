@@ -18,15 +18,15 @@ W, H = 1600, 1200
 # hexes leave whitespace around them — that's what creates the "fading dots"
 # look at the small end.
 R_MIN = 0.8
-R_MAX = 28.0
-GRID_PADDING_FACTOR = 0.93  # squeeze cells a hair so big hexes don't touch
+R_MAX = 36.0
+GRID_PADDING_FACTOR = 0.94  # squeeze cells a hair so big hexes don't touch
 
 DX = R_MAX * math.sqrt(3) * GRID_PADDING_FACTOR
 DY = R_MAX * 1.5 * GRID_PADDING_FACTOR
 
-COLOR = "#b45309"  # amber-700
-ACCENT = "#f59e0b"  # amber-500 — sprinkle a few of these for warmth
-ACCENT_RATE = 1 / 40  # ~2.5% of hexes use the accent colour
+COLOR = "#0f172a"  # slate-900 — dark navy, matches the reference dot pattern
+ACCENT = "#ea580c"  # orange-600 — rare warm sprinkle
+ACCENT_RATE = 1 / 60  # ~1.6% of hexes use the accent colour
 
 
 def hex_points(cx: float, cy: float, r: float) -> str:
@@ -53,10 +53,10 @@ def main() -> int:
             # growth ramps quickly near the bottom.
             t_eased = t * t
             r = R_MIN + (R_MAX - R_MIN) * t_eased
-            opacity = 0.12 + 0.32 * t_eased  # 12% at top, 44% at bottom
+            opacity = 0.04 + 0.10 * t_eased  # very subtle: 4% at top, 14% at bottom
             # Deterministic accent picker
             rng_state = (rng_state * 1103515245 + 12345) & 0x7FFFFFFF
-            is_accent = (rng_state % 40) == 0
+            is_accent = (rng_state % 60) == 0
             fill = ACCENT if is_accent else COLOR
             hexes.append(
                 f'<polygon points="{hex_points(x, y, r)}" fill="{fill}" fill-opacity="{opacity:.2f}"/>'

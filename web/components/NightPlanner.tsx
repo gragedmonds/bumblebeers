@@ -252,6 +252,7 @@ export default function NightPlanner({ date }: { date: string }) {
         prefs={prefs}
         games={night.games}
         opponent={schedule?.opponent ?? null}
+        printHref={`/lineup/${encodeURIComponent(date)}/print`}
         onChange={updateGames}
       />
     </div>
