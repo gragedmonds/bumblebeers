@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSnapshot } from "@/lib/useSnapshot";
-import type { AtBat, RunnerMove } from "@/lib/data";
+import type { AtBat, BaseSnapshot, RunnerMove } from "@/lib/data";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 
@@ -249,6 +249,34 @@ function seedRunnersFromSnapshot(
   }
 }
 
+// Per-batter handedness. Keys are person_key (lowercase first name). Default
+// is "R" for anyone not listed — fill these in with actual values to make
+// the Pulled / Pushed (oppo) chips trustworthy. Switch hitters can use "S"
+// (treated as righty for spray classification today).
+const HANDEDNESS: Record<string, "L" | "R" | "S"> = {
+  // TODO Greg: confirm these and add the rest of the active roster.
+  // greg: "R",
+  // sean: "L",
+};
+
+/** Derived per-AB context. Computed once over the whole at-bat list (not
+ * the filtered sequence) so chips and tooltips reflect what was actually
+ * happening in the game, regardless of which view filter is active. */
+interface AtBatDerived {
+  outs_before: 0 | 1 | 2 | 3;
+  risp: boolean;
+  loaded: boolean;
+  leadoff: boolean;
+  frame: number; // 1-based; parsed from "<gameid>:<frame>" in half_inning_id
+  late_inning: boolean; // frame >= 5 (slo-pitch is 6–7 innings)
+  big_inning: boolean; // half-inning total runs >= 5
+  productive_out: boolean; // batter out, but advanced a runner or scored one
+  walk_off: boolean; // last AB of the game with a run scored (best guess)
+  spray: "pull" | "push" | "middle" | "other";
+}
+
+type DecoratedAtBat = AtBat & { d: AtBatDerived };
+
 const RESULT_COLORS: Record<string, string> = {
   single: "#69d68f",
   double: "#3aaaff",
@@ -276,6 +304,110 @@ const OUT_RESULTS = new Set([
 
 function colorFor(result: string | null | undefined): string {
   return (result && RESULT_COLORS[result]) || "#8a99a8";
+}
+
+function parseFrame(halfInningId: string | null): number {
+  if (!halfInningId) return 0;
+  const colon = halfInningId.lastIndexOf(":");
+  if (colon < 0) return 0;
+  const n = parseInt(halfInningId.slice(colon + 1), 10);
+  return Number.isFinite(n) ? n : 0;
+}
+
+/** Decorate every AB with derived situational context. Two passes:
+ *   1. Group by half_inning_id, sort by transaction_seq, walk forward
+ *      tracking outs and accumulating total runs scored in the frame.
+ *   2. Group by event_id (game), find the last AB of each game, mark it
+ *      as walk_off if it scored a run.
+ * O(n log n) one-time cost — re-runs only when snapshot.at_bats changes. */
+function decorateAtBats(atbats: AtBat[]): DecoratedAtBat[] {
+  const outsBefore = new Map<AtBat, 0 | 1 | 2 | 3>();
+  const halfRuns = new Map<string, number>();
+
+  const byHalfInning = new Map<string, AtBat[]>();
+  for (const ab of atbats) {
+    const key = ab.half_inning_id ?? "?";
+    let bucket = byHalfInning.get(key);
+    if (!bucket) {
+      bucket = [];
+      byHalfInning.set(key, bucket);
+    }
+    bucket.push(ab);
+  }
+  for (const [key, bucket] of byHalfInning) {
+    bucket.sort((a, b) => a.transaction_seq - b.transaction_seq);
+    let outs = 0;
+    let runs = 0;
+    for (const ab of bucket) {
+      outsBefore.set(ab, Math.min(outs, 3) as 0 | 1 | 2 | 3);
+      if (OUT_RESULTS.has(ab.result || "")) outs++;
+      runs += ab.runs_scored || 0;
+    }
+    halfRuns.set(key, runs);
+  }
+
+  const byGame = new Map<string, AtBat[]>();
+  for (const ab of atbats) {
+    const key = ab.event_id ?? "?";
+    let bucket = byGame.get(key);
+    if (!bucket) {
+      bucket = [];
+      byGame.set(key, bucket);
+    }
+    bucket.push(ab);
+  }
+  const walkOffs = new Set<AtBat>();
+  for (const bucket of byGame.values()) {
+    bucket.sort((a, b) => a.transaction_seq - b.transaction_seq);
+    const last = bucket[bucket.length - 1];
+    if (!last) continue;
+    if (last.run_scoring || (last.runs_scored ?? 0) > 0) walkOffs.add(last);
+  }
+
+  return atbats.map((ab) => {
+    const ob = outsBefore.get(ab) ?? 0;
+    const before = ab.runners_before ?? { "1": null, "2": null, "3": null };
+    const onBases = (["1", "2", "3"] as const).filter((b) => before[b]);
+    const risp = !!(before["2"] || before["3"]);
+    const loaded = !!(before["1"] && before["2"] && before["3"]);
+    const leadoff = ob === 0 && onBases.length === 0;
+    const frame = parseFrame(ab.half_inning_id);
+    const late_inning = frame >= 5;
+    const totalRuns = halfRuns.get(ab.half_inning_id ?? "?") ?? 0;
+    const big_inning = totalRuns >= 5;
+    const isOut = OUT_RESULTS.has(ab.result || "");
+    const moves = ab.runner_moves ?? [];
+    const advanced = moves.some(
+      (m) =>
+        m.from > 0 &&
+        typeof m.to === "number" &&
+        (m.to as number) > (m.from as number),
+    );
+    const productive_out = isOut && ((ab.runs_scored ?? 0) > 0 || advanced);
+    const handed = HANDEDNESS[ab.person_key] ?? "R";
+    const side = ab.field_side;
+    let spray: AtBatDerived["spray"];
+    if (side === "middle") spray = "middle";
+    else if (side === "left") spray = handed === "L" ? "push" : "pull";
+    else if (side === "right") spray = handed === "R" ? "push" : "pull";
+    else spray = "other";
+
+    return {
+      ...ab,
+      d: {
+        outs_before: ob,
+        risp,
+        loaded,
+        leadoff,
+        frame,
+        late_inning,
+        big_inning,
+        productive_out,
+        walk_off: walkOffs.has(ab),
+        spray,
+      },
+    };
+  });
 }
 
 type Mode = "career" | "season" | "all";
@@ -375,7 +507,7 @@ function setDataset(el: SVGElement, key: string, val: string) {
   el.setAttribute("data-" + key, val);
 }
 
-function stampMetadata(el: SVGElement, ab: AtBat) {
+function stampMetadata(el: SVGElement, ab: DecoratedAtBat, abi?: number) {
   setDataset(el, "season", String(ab.season_year));
   setDataset(el, "result", ab.result || "");
   setDataset(el, "pt", ab.play_type || "");
@@ -383,14 +515,34 @@ function stampMetadata(el: SVGElement, ab: AtBat) {
   setDataset(el, "side", ab.field_side || "");
   setDataset(el, "rs", ab.run_scoring ? "true" : "false");
   setDataset(el, "person", ab.person_key || "");
+  // Derived chips.
+  setDataset(el, "outs", String(ab.d.outs_before));
+  setDataset(el, "risp", ab.d.risp ? "true" : "false");
+  setDataset(el, "loaded", ab.d.loaded ? "true" : "false");
+  setDataset(el, "leadoff", ab.d.leadoff ? "true" : "false");
+  setDataset(el, "frame", String(ab.d.frame));
+  setDataset(el, "lateinn", ab.d.late_inning ? "true" : "false");
+  setDataset(el, "biginn", ab.d.big_inning ? "true" : "false");
+  setDataset(el, "prodout", ab.d.productive_out ? "true" : "false");
+  setDataset(el, "walkoff", ab.d.walk_off ? "true" : "false");
+  setDataset(el, "spray", ab.d.spray);
+  setDataset(
+    el,
+    "rbi",
+    (ab.runs_scored ?? 0) >= 2 ? "multi" : (ab.runs_scored ?? 0) === 1 ? "single" : "none",
+  );
+  // Index into the current rendered sequence — used by the hover tooltip
+  // to look the AB back up.
+  if (abi != null) setDataset(el, "abi", String(abi));
 }
 
 function paintMarker(
   trail: SVGGElement,
-  ab: AtBat,
+  ab: DecoratedAtBat,
   showLabel: boolean,
   labelText: string,
   initial = true,
+  abi?: number,
 ) {
   if (ab.x == null || ab.y == null) return null;
   const c = colorFor(ab.result || undefined);
@@ -400,7 +552,7 @@ function paintMarker(
   dot.setAttribute("r", initial ? "4" : "3");
   dot.setAttribute("fill", c);
   dot.setAttribute("opacity", initial ? "0.6" : "0.18");
-  stampMetadata(dot, ab);
+  stampMetadata(dot, ab, abi);
   trail.appendChild(dot);
   if (showLabel) {
     const lbl = document.createElementNS(SVG_NS, "text");
@@ -409,7 +561,7 @@ function paintMarker(
     lbl.setAttribute("fill", "#1f2937");
     lbl.setAttribute("font-size", "9");
     lbl.setAttribute("opacity", initial ? "0.9" : "0.4");
-    stampMetadata(lbl, ab);
+    stampMetadata(lbl, ab, abi);
     lbl.textContent = labelText;
     trail.appendChild(lbl);
     return { dot, lbl };
@@ -532,7 +684,13 @@ function fadeMarker(
 
 export default function Diamond() {
   const { snapshot, error } = useSnapshot();
-  const atbats = snapshot?.at_bats ?? [];
+  // Decorate every AB once with situational context (outs, bases, frame,
+  // big-inning, walk-off, spray side relative to handedness). Used by both
+  // the chip-highlight system and the hover tooltip.
+  const atbats = useMemo<DecoratedAtBat[]>(
+    () => decorateAtBats(snapshot?.at_bats ?? []),
+    [snapshot],
+  );
 
   const [mode, setMode] = useState<Mode>("career");
   const [player, setPlayer] = useState<string>("");
@@ -569,6 +727,16 @@ export default function Diamond() {
   const showLabelsRef = useRef(showLabels);
   const showRunnersRef = useRef(showRunners);
   const modeRef = useRef(mode);
+  // Mirrors the most recently rendered sequence so the SVG-level pointer
+  // listener can resolve `data-abi="<i>"` back to the AB without paying
+  // for a fresh getSequence() filter on every mousemove.
+  const seqRef = useRef<DecoratedAtBat[]>([]);
+  // Tooltip state — `hoveredAb` swaps content (cheap, infrequent), and the
+  // div's left/top is mutated imperatively per pointer event so we don't
+  // re-render on every mousemove.
+  const [hoveredAb, setHoveredAb] = useState<DecoratedAtBat | null>(null);
+  const tooltipRef = useRef<HTMLDivElement>(null);
+  const svgWrapRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     speedRef.current = speed;
@@ -625,8 +793,8 @@ export default function Diamond() {
     }
   }, [snapshot, player, season, playerOptions, seasonOptions]);
 
-  const getSequence = useCallback((): AtBat[] => {
-    let seq: AtBat[];
+  const getSequence = useCallback((): DecoratedAtBat[] => {
+    let seq: DecoratedAtBat[];
     if (mode === "career") {
       seq = atbats.filter((ab) => ab.person_key === player);
     } else if (mode === "season") {
@@ -669,7 +837,7 @@ export default function Diamond() {
   }, []);
 
   const animateOne = useCallback(
-    (ab: AtBat, isLastOfHalfInning = false) => {
+    (ab: DecoratedAtBat, isLastOfHalfInning = false, abi?: number) => {
       const active = activeLayerRef.current;
       const trail = trailLayerRef.current;
       const baseLayer = baseLayerRef.current;
@@ -786,11 +954,11 @@ export default function Diamond() {
           return;
         }
         if (showTrailsRef.current) {
-          const m = paintMarker(trail!, ab, showLabelsRef.current, labelFor(ab), true);
+          const m = paintMarker(trail!, ab, showLabelsRef.current, labelFor(ab), true, abi);
           if (m?.dot) fadeMarker(m.dot, fadeDur * 1000, 0.18, 3);
           if (m?.lbl) fadeMarker(m.lbl, fadeDur * 1000, 0.4);
         } else if (showLabelsRef.current) {
-          const m = paintMarker(trail!, ab, true, labelFor(ab), true);
+          const m = paintMarker(trail!, ab, true, labelFor(ab), true, abi);
           if (m?.lbl) fadeMarker(m.lbl, fadeDur * 1000, 0.4);
           if (m?.dot) m.dot.remove();
         }
@@ -912,13 +1080,14 @@ export default function Diamond() {
   );
 
   const renderShowAll = useCallback(
-    (seq: AtBat[]) => {
+    (seq: DecoratedAtBat[]) => {
       const trail = trailLayerRef.current;
       if (!trail) return;
       const frag = document.createDocumentFragment();
       const showT = showTrailsRef.current;
       const showL = showLabelsRef.current;
-      for (const ab of seq) {
+      for (let i = 0; i < seq.length; i++) {
+        const ab = seq[i];
         if (ab.x == null || ab.y == null) continue;
         const c = colorFor(ab.result || undefined);
         if (showT) {
@@ -928,7 +1097,7 @@ export default function Diamond() {
           dot.setAttribute("r", "3");
           dot.setAttribute("fill", c);
           dot.setAttribute("opacity", "0.18");
-          stampMetadata(dot, ab);
+          stampMetadata(dot, ab, i);
           frag.appendChild(dot);
         }
         if (showL) {
@@ -938,7 +1107,7 @@ export default function Diamond() {
           lbl.setAttribute("fill", "#1f2937");
           lbl.setAttribute("font-size", "9");
           lbl.setAttribute("opacity", "0.4");
-          stampMetadata(lbl, ab);
+          stampMetadata(lbl, ab, i);
           lbl.textContent = labelFor(ab);
           frag.appendChild(lbl);
         }
@@ -954,6 +1123,7 @@ export default function Diamond() {
     idxRef.current = 0;
     clearLayers();
     const seq = getSequence();
+    seqRef.current = seq;
     setSeqLen(seq.length);
     if (seq.length === 0) {
       setPosition(0);
@@ -991,7 +1161,7 @@ export default function Diamond() {
     const isLastOfHalfInning =
       !nextAb ||
       (ab.half_inning_id != null && nextAb.half_inning_id !== ab.half_inning_id);
-    animateOne(ab, isLastOfHalfInning);
+    animateOne(ab, isLastOfHalfInning, idxRef.current);
     setNowCard(
       <div>
         <div className="flex items-center gap-2">
@@ -1135,6 +1305,37 @@ export default function Diamond() {
           { text: "Pop fly", attr: "pt", val: "pop_fly" },
         ],
       },
+      {
+        label: "Situation",
+        chips: [
+          { text: "Leadoff", attr: "leadoff", val: "true" },
+          { text: "0 outs", attr: "outs", val: "0" },
+          { text: "1 out", attr: "outs", val: "1" },
+          { text: "2 outs", attr: "outs", val: "2" },
+          { text: "RISP", attr: "risp", val: "true" },
+          { text: "Bases loaded", attr: "loaded", val: "true" },
+          { text: "1st inning", attr: "frame", val: "1" },
+          { text: "Late (5+)", attr: "lateinn", val: "true" },
+        ],
+      },
+      {
+        label: "Impact",
+        chips: [
+          { text: "1 RBI", attr: "rbi", val: "single" },
+          { text: "2+ RBI", attr: "rbi", val: "multi" },
+          { text: "Walk-off", attr: "walkoff", val: "true" },
+          { text: "Big inning (5+)", attr: "biginn", val: "true" },
+          { text: "Productive out", attr: "prodout", val: "true" },
+        ],
+      },
+      {
+        label: "Spray (vs hand)",
+        chips: [
+          { text: "Pulled", attr: "spray", val: "pull" },
+          { text: "Pushed (oppo)", attr: "spray", val: "push" },
+          { text: "Up the middle", attr: "spray", val: "middle" },
+        ],
+      },
     ];
   }, [atbats]);
 
@@ -1164,6 +1365,46 @@ export default function Diamond() {
       }
     });
   }, []);
+
+  // Position the tooltip imperatively (no React re-render per mousemove).
+  const placeTooltip = useCallback((clientX: number, clientY: number) => {
+    const tip = tooltipRef.current;
+    const wrap = svgWrapRef.current;
+    if (!tip || !wrap) return;
+    const wrapRect = wrap.getBoundingClientRect();
+    const x = clientX - wrapRect.left + 14;
+    const y = clientY - wrapRect.top + 14;
+    // Clamp inside wrapper so it never overflows on the right or bottom.
+    const tipW = tip.offsetWidth || 220;
+    const tipH = tip.offsetHeight || 80;
+    const maxX = wrapRect.width - tipW - 4;
+    const maxY = wrapRect.height - tipH - 4;
+    tip.style.transform = `translate(${Math.max(0, Math.min(x, maxX))}px, ${Math.max(0, Math.min(y, maxY))}px)`;
+  }, []);
+
+  const onSvgPointerMove = useCallback(
+    (e: React.PointerEvent<SVGSVGElement>) => {
+      const t = e.target as SVGElement;
+      if (
+        (t.tagName === "circle" || t.tagName === "text") &&
+        t.hasAttribute("data-abi")
+      ) {
+        const i = parseInt(t.getAttribute("data-abi") || "", 10);
+        const ab = Number.isFinite(i) ? seqRef.current[i] : null;
+        if (ab) {
+          if (hoveredAb !== ab) setHoveredAb(ab);
+          placeTooltip(e.clientX, e.clientY);
+          return;
+        }
+      }
+      if (hoveredAb) setHoveredAb(null);
+    },
+    [hoveredAb, placeTooltip],
+  );
+
+  const onSvgPointerLeave = useCallback(() => {
+    if (hoveredAb) setHoveredAb(null);
+  }, [hoveredAb]);
 
   // Filter toggle helpers
   function togglePresetTo(p: Preset) {
@@ -1469,8 +1710,17 @@ export default function Diamond() {
 
       {/* Diamond + chips */}
       <section className="space-y-3">
-        <div className="aspect-square overflow-hidden rounded-2xl border border-emerald-900/20 bg-emerald-50 p-2 shadow-sm">
-          <svg viewBox="-110 -110 510 510" preserveAspectRatio="xMidYMid meet" className="h-full w-full">
+        <div
+          ref={svgWrapRef}
+          className="relative aspect-square overflow-hidden rounded-2xl border border-emerald-900/20 bg-emerald-50 p-2 shadow-sm"
+        >
+          <svg
+            viewBox="-110 -110 510 510"
+            preserveAspectRatio="xMidYMid meet"
+            className="h-full w-full"
+            onPointerMove={onSvgPointerMove}
+            onPointerLeave={onSvgPointerLeave}
+          >
             <defs>
               <radialGradient id="grass" cx="50%" cy="100%" r="100%">
                 <stop offset="0%" stopColor="#83c79a" />
@@ -1515,6 +1765,14 @@ export default function Diamond() {
             <g ref={baseLayerRef} />
             <g ref={activeLayerRef} />
           </svg>
+          {hoveredAb && (
+            <div
+              ref={tooltipRef}
+              className="pointer-events-none absolute left-0 top-0 z-30 max-w-[260px] rounded-lg border border-stone-300 bg-white/95 px-2.5 py-2 text-[12px] leading-snug text-stone-900 shadow-lg backdrop-blur"
+            >
+              <AtBatTooltip ab={hoveredAb} />
+            </div>
+          )}
         </div>
 
         <div className="flex flex-wrap gap-2 text-xs text-stone-600">
@@ -1576,6 +1834,83 @@ export default function Diamond() {
         </div>
       </section>
     </div>
+  );
+}
+
+function basesText(d: AtBatDerived, before: BaseSnapshot): string {
+  if (d.loaded) return "bases loaded";
+  const b1 = !!before["1"];
+  const b2 = !!before["2"];
+  const b3 = !!before["3"];
+  if (!b1 && !b2 && !b3) return "bases empty";
+  const parts: string[] = [];
+  if (b1) parts.push("1st");
+  if (b2) parts.push("2nd");
+  if (b3) parts.push("3rd");
+  if (parts.length === 1) return `runner on ${parts[0]}`;
+  return `runners on ${parts.join(" & ")}`;
+}
+
+function tagPills(ab: DecoratedAtBat): { text: string; tone: string }[] {
+  const out: { text: string; tone: string }[] = [];
+  if (ab.d.walk_off) out.push({ text: "walk-off", tone: "bg-amber-200 text-amber-900" });
+  if (ab.d.big_inning) out.push({ text: "big inning", tone: "bg-emerald-100 text-emerald-900" });
+  if (ab.d.leadoff) out.push({ text: "leadoff", tone: "bg-sky-100 text-sky-900" });
+  if (ab.d.loaded) out.push({ text: "bases loaded", tone: "bg-violet-100 text-violet-900" });
+  else if (ab.d.risp) out.push({ text: "RISP", tone: "bg-violet-100 text-violet-900" });
+  if (ab.d.productive_out) out.push({ text: "productive out", tone: "bg-stone-200 text-stone-800" });
+  if (ab.d.spray !== "middle" && ab.d.spray !== "other") {
+    out.push({
+      text: ab.d.spray === "pull" ? "pulled" : "oppo",
+      tone: "bg-orange-100 text-orange-900",
+    });
+  }
+  return out;
+}
+
+function AtBatTooltip({ ab }: { ab: DecoratedAtBat }) {
+  const c = colorFor(ab.result || undefined);
+  const rbi = ab.runs_scored ?? 0;
+  return (
+    <>
+      <div className="flex items-center gap-2">
+        <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: c }} />
+        <b>{ab.batter || "?"}</b>
+        <span className="text-stone-500">vs</span>
+        <span>{ab.opponent || "?"}</span>
+        <span className="ml-auto rounded-full bg-stone-100 px-1.5 text-[10px] tabular-nums text-stone-600">
+          {ab.season_year}
+        </span>
+      </div>
+      <div className="mt-0.5 text-stone-700">
+        <b className="text-stone-900">{ab.result || "?"}</b>
+        {ab.play_type ? <> · {ab.play_type.replace(/_/g, " ")}</> : null}
+        {ab.defender_position ? <> → {ab.defender_position}</> : null}
+        {rbi > 0 && (
+          <>
+            {" · "}
+            <b className="text-amber-800">+{rbi} RBI</b>
+          </>
+        )}
+      </div>
+      <div className="mt-0.5 text-[11px] text-stone-600">
+        Frame {ab.d.frame || "?"} · {ab.d.outs_before} out{ab.d.outs_before === 1 ? "" : "s"} ·{" "}
+        {basesText(ab.d, ab.runners_before)}
+      </div>
+      <div className="text-[11px] text-stone-500">{ab.date}</div>
+      {tagPills(ab).length > 0 && (
+        <div className="mt-1 flex flex-wrap gap-1">
+          {tagPills(ab).map((p) => (
+            <span
+              key={p.text}
+              className={`rounded-full px-1.5 py-px text-[10px] font-semibold ${p.tone}`}
+            >
+              {p.text}
+            </span>
+          ))}
+        </div>
+      )}
+    </>
   );
 }
 
