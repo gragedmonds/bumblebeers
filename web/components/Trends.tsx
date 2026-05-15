@@ -13,7 +13,7 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import { Line } from "react-chartjs-2";
 import { useSnapshot } from "@/lib/useSnapshot";
-import type { Player, PlayerGame } from "@/lib/data";
+import { applyRosterOverrides, type Player, type PlayerGame } from "@/lib/data";
 
 ChartJS.register(
   CategoryScale,
@@ -73,25 +73,44 @@ export default function Trends() {
   const [ymax, setYmax] = useState<number | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [initialized, setInitialized] = useState(false);
-  const [archived, setArchived] = useState<Set<string>>(new Set());
+  // Mirror the same derivation /lineup uses — players who haven't played
+  // in the latest season (and aren't manually re-added) are out, plus
+  // anything Greg explicitly archived. Best-effort fetch: if /api/lineup
+  // fails the picker falls back to "everyone" so the page still works.
+  const [archived, setArchived] = useState<string[]>([]);
+  const [added, setAdded] = useState<{ key: string; display_name: string }[]>([]);
+  const [overridesLoaded, setOverridesLoaded] = useState(false);
 
-  // Pull the archive list from the shared lineup blob so retired players
-  // (e.g. someone Greg explicitly archived on /lineup) drop out of Trends
-  // too. Best-effort: if /api/lineup fails or storage isn't configured,
-  // we just show everyone — the page still works.
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
         const r = await fetch("/api/lineup", { cache: "no-store" });
         if (!r.ok) return;
-        const json = (await r.json()) as { archived?: unknown };
+        const json = (await r.json()) as {
+          archived?: unknown;
+          added?: unknown;
+        };
         if (cancelled) return;
         if (Array.isArray(json.archived)) {
-          setArchived(new Set(json.archived.filter((s): s is string => typeof s === "string")));
+          setArchived(
+            json.archived.filter((s): s is string => typeof s === "string"),
+          );
+        }
+        if (Array.isArray(json.added)) {
+          const addedClean = json.added.flatMap((v) => {
+            if (!v || typeof v !== "object") return [];
+            const rec = v as Record<string, unknown>;
+            const key = typeof rec.key === "string" ? rec.key : "";
+            const name = typeof rec.display_name === "string" ? rec.display_name : "";
+            return key && name ? [{ key, display_name: name }] : [];
+          });
+          setAdded(addedClean);
         }
       } catch {
-        // ignore — chart still renders without filter
+        // ignore
+      } finally {
+        if (!cancelled) setOverridesLoaded(true);
       }
     })();
     return () => {
@@ -101,14 +120,25 @@ export default function Trends() {
 
   const playerKeys = useMemo(() => {
     if (!snapshot) return [];
+    // While the overrides fetch is in flight, fall back to every player so
+    // the page renders something — it'll re-narrow once the response lands.
+    if (!overridesLoaded) {
+      return Object.keys(snapshot.players).sort((a, b) => {
+        const ca = snapshot.career_weighted[a]?.career_BMBLplus_weighted ?? -999;
+        const cb = snapshot.career_weighted[b]?.career_BMBLplus_weighted ?? -999;
+        return cb - ca;
+      });
+    }
+    const active = applyRosterOverrides(snapshot, { archived, added });
+    const activeKeys = new Set(active.map((p) => p.key));
     return Object.keys(snapshot.players)
-      .filter((k) => !archived.has(k))
+      .filter((k) => activeKeys.has(k))
       .sort((a, b) => {
         const ca = snapshot.career_weighted[a]?.career_BMBLplus_weighted ?? -999;
         const cb = snapshot.career_weighted[b]?.career_BMBLplus_weighted ?? -999;
         return cb - ca;
       });
-  }, [snapshot, archived]);
+  }, [snapshot, archived, added, overridesLoaded]);
 
   const years = useMemo(() => {
     if (!snapshot) return [];
@@ -119,8 +149,9 @@ export default function Trends() {
     return [...all].sort();
   }, [snapshot, playerKeys]);
 
-  // Initialize defaults once data arrives
-  if (snapshot && !initialized && playerKeys.length > 0) {
+  // Initialize defaults once both snapshot AND overrides have arrived, so the
+  // top-5 default selection comes from the *filtered* roster.
+  if (snapshot && overridesLoaded && !initialized && playerKeys.length > 0) {
     setSelected(new Set(playerKeys.slice(0, 5)));
     setYmin(years[0] ?? null);
     setYmax(years[years.length - 1] ?? null);
